@@ -40,8 +40,9 @@ OBJ = $(SOURCES:%.cc=%.o)
 
 autodepend = -MD -MT $@ -MP
 
-COMMON = $(autodepend) -Wall -Werror -nostdinc -D __BSD_VISIBLE=1 -D_KERNEL \
-	 -include $(src)/compiler/include/intrinsics.hh -Wformat=0 -Wno-format-security
+COMMON  = $(autodepend) -Wall -Werror -nostdinc -D __BSD_VISIBLE=1 -D_KERNEL 
+COMMON += -include $(src)/compiler/include/intrinsics.hh -Wformat=0 
+COMMON += -Wno-format-security -O3
 
 CXXFLAGS = -std=gnu++11 $(COMMON) -shared -fPIC
 LDFLAGS = -shared -fPIC
