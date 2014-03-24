@@ -47,15 +47,15 @@ COMMON += -Wno-format-security -O3
 CXXFLAGS = -std=gnu++11 $(COMMON) -shared -fPIC
 LDFLAGS = -shared -fPIC
 
-all: osv-memcached
+all: osv-memcached.so
 
-osv-memcached: $(OBJ)
+osv-memcached.so: $(OBJ)
 	$(CXX) $(OBJ) $(LDFLAGS) -o $@
 
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 clean:
-	rm -f *.d *.o osv-memcached
+	rm -f *.d *.o osv-memcached.so
 
 -include $(shell find -name '*.d')
