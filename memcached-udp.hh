@@ -34,6 +34,29 @@ namespace osv_apps {
 
 class memcached {
 public:
+    //
+    // Note: protocol specifies the key as limited to 250 bytes, no spaces or
+    // control chars.
+    //
+    typedef std::string memcache_key;
+
+    typedef std::list<memcache_key>                          lru_type;
+    typedef lru_type::iterator                               lru_iterator;
+
+    struct memcache_value {
+        lru_iterator lru_link;
+        std::string data;
+        //
+        // "flags" is an opaque 32-bit integer which the clients gives in the
+        // "set" command, and is echoed back on "get" commands.
+        //
+        u32 flags;
+        time_t exptime;
+    };
+
+    typedef std::unordered_map<memcache_key, memcache_value> cache_type;
+    typedef cache_type::iterator                             cache_iterator;
+
     memcached(u64 max_cache_size) :
         _htons_1(ntohs(1)),
         _max_cache_size(max_cache_size),
@@ -138,6 +161,16 @@ private:
         _cache_lru.erase(++it, _cache_lru.end());
     }
 
+    void move_to_lru_front(cache_iterator& it, memcache_key& str_key)
+    {
+        // Move the key to the front if it's not already there
+        if (it->second.lru_link != _cache_lru.begin()) {
+            _cache_lru.erase(it->second.lru_link);
+            _cache_lru.push_front(str_key);
+            it->second.lru_link = _cache_lru.begin();
+        }
+    }
+
     void dump_mbuf(mbuf* m)
     {
         int i, j, len = m->m_hdr.mh_len;
@@ -152,33 +185,19 @@ private:
         }
     }
 
-    /**
-     * @note protocol specifies limited to 250 bytes, no spaces or control
-     *       chars.
-     */
-    typedef std::string memcache_key;
 
-    struct memcache_value {
-        std::list<memcache_key>::iterator lru_link;
-        std::string data;
-        //
-        // "flags" is an opaque 32-bit integer which the clients gives in the
-        // "set" command, and is echoed back on "get" commands.
-        //
-        u32 flags;
-        time_t exptime;
-    };
 
 private:
     const u16 _htons_1;
     u64 _max_cache_size;
     u64 _cached_data_size;
-    std::unordered_map<memcache_key, memcache_value> _cache;
+
+    cache_type _cache;
 
     /**
      * LRU keys list: the most rececently used at the front.
      */
-    std::list<memcache_key> _cache_lru;
+    lru_type _cache_lru;
 };
 
 }

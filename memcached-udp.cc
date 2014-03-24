@@ -74,8 +74,10 @@ int memcached::process_request(char* packet, u16 len)
                 strcpy(reply, "VALUE ");
                 char *r = reply + 6;
 
-                strcpy(r, key);
-                r += strlen(key); // do we have this already?
+                std::string str_key(key);
+
+                strcpy(r, str_key.c_str());
+                r += str_key.size();
 
                 int data_len = it->second.data.length();
                 r += sprintf(r, " %ld %d\r\n", it->second.flags, data_len);
@@ -86,6 +88,9 @@ int memcached::process_request(char* packet, u16 len)
 
                 strcpy(r, "\r\nEND\r\n");
                 r += 7;
+
+                // Move the key to the front of the LRU
+                move_to_lru_front(it, str_key);
 
                 return hdr_len + (r - reply);
             }
@@ -138,9 +143,7 @@ int memcached::process_request(char* packet, u16 len)
                 it->second.exptime = (time_t)exptime;
 
                 // Move the key to the front of the LRU
-                _cache_lru.erase(it->second.lru_link);
-                _cache_lru.push_front(str_key);
-                it->second.lru_link = _cache_lru.begin();
+                move_to_lru_front(it, str_key);
             }
 
             _cached_data_size += bytes;
