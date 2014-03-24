@@ -11,8 +11,8 @@ static constexpr u64 default_max_cache_size = 64 * 1024 * 1024; // 64MB
 static inline void usage()
 {
     cout<<endl<<endl<<" Usage: osv-memcached [-m <num>]"<<endl<<endl;
-    cout<<"    -m <num> - Use max <num> MB memory to use for object storage; "
-                         "the default is 64 megabytes."<<endl;
+    cout<<"    -m <num> - Use max <num> MB of memory to use for object storage;"
+          " the default is 64MB."<<endl;
     cout<<endl;
 }
 
@@ -43,9 +43,9 @@ int main(int argc, char* argv[])
             }
 
             max_cache_size = static_cast<u64>(tmp) * 1024 * 1024;
-            cout<<"osv-memcached: MAX data cache size is "<<max_cache_size<<endl;
+            cout<<"osv-memcached: MAX data cache size is "<<tmp<<"MB"<<endl;
         } else {
-            cerr<<"Unknow parameter: "<<argv[i]<<endl;
+            cerr<<"Unknown parameter: "<<argv[i]<<endl;
             usage();
             return 1;
         }
@@ -60,7 +60,7 @@ int main(int argc, char* argv[])
     cout<<"Press 'e' + 'ENTER' to exit"<<endl;
     char ch;
     while (1) {
-        cin >> ch;
+        cin>>ch;
         if (ch == 'e') {
             break;
         } else {
