@@ -1,6 +1,3 @@
-SOURCES = memcached-udp.cc memcached.cc
-HEADERS = memcached-udp.hh
-
 src = $(OSV_PATH)
 arch = $(ARCH)
 mode = $(MODE)
@@ -27,16 +24,12 @@ INCLUDES += -isystem $(src)/include/api/$(arch)
 INCLUDES += -isystem $(gcc-inc-base2)
 INCLUDES += -isystem gen/include
 INCLUDES += $(post-includes-bsd)
+INCLUDES += -I$(src)/build/$(mode)/gen/include/
 
 post-includes-bsd += -isystem $(src)/bsd/sys
 # For acessing machine/ in cpp xen drivers
 post-includes-bsd += -isystem $(src)/bsd/
 post-includes-bsd += -isystem $(src)/bsd/$(arch)
-
-INCLUDES += -I$(src)/build/$(mode)/gen/include/
-
-
-OBJ = $(SOURCES:%.cc=%.o)
 
 autodepend = -MD -MT $@ -MP
 
@@ -47,12 +40,17 @@ COMMON += -Wno-format-security -O3
 CXXFLAGS = -std=gnu++11 $(COMMON) -shared -fPIC
 LDFLAGS = -shared -fPIC
 
+SOURCES = memcached-udp.cc memcached.cc
+HEADERS = memcached-udp.hh
+
+OBJ = $(SOURCES:%.cc=%.o)
+
 all: osv-memcached.so
 
 osv-memcached.so: $(OBJ)
 	$(CXX) $(OBJ) $(LDFLAGS) -o $@
 
-%.o: %.cc
+%.o: %.cc Makefile
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 clean:
