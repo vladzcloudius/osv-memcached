@@ -90,7 +90,7 @@ int memcached::process_request(char* packet, u16 len)
                 r += 7;
 
                 // Move the key to the front of the LRU
-                move_to_lru_front(it, str_key);
+                move_to_lru_front(it);
 
                 return hdr_len + (r - reply);
             }
@@ -126,7 +126,8 @@ int memcached::process_request(char* packet, u16 len)
 
             // If it's a new key - add it to the lru
             if (it == _cache.end()) {
-                _cache_lru.push_front(str_key);
+                lru_entry* entry = new lru_entry(str_key);
+                _cache_lru.push_front(*entry);
 
                 _cache[str_key] =
                     { _cache_lru.begin(),
@@ -143,7 +144,7 @@ int memcached::process_request(char* packet, u16 len)
                 it->second.exptime = (time_t)exptime;
 
                 // Move the key to the front of the LRU
-                move_to_lru_front(it, str_key);
+                move_to_lru_front(it);
             }
 
             _cached_data_size += bytes;

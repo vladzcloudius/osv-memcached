@@ -25,11 +25,12 @@
 #include <bsd/sys/netinet/ip_var.h>
 #include <bsd/sys/netinet/udp_var.h>
 
-
 #include <iostream>
 #include <unordered_map>
 
+#include <boost/intrusive/list.hpp>
 
+namespace bi = boost::intrusive;
 namespace osv_apps {
 
 class memcached {
@@ -40,18 +41,25 @@ public:
     //
     typedef std::string memcache_key;
 
-    typedef std::list<memcache_key>                          lru_type;
-    typedef lru_type::iterator                               lru_iterator;
+    struct lru_entry : public boost::intrusive::list_base_hook<> {
+        memcache_key key;
+
+
+        lru_entry(std::string& k) : key(k) {}
+    };
+
+    typedef bi::list<lru_entry>                                lru_type;
+    typedef lru_type::iterator                                 lru_iterator;
 
     struct memcache_value {
         lru_iterator lru_link;
-        std::string data;
+        std::string  data;
         //
         // "flags" is an opaque 32-bit integer which the clients gives in the
         // "set" command, and is echoed back on "get" commands.
         //
-        u32 flags;
-        time_t exptime;
+        u32          flags;
+        time_t       exptime;
     };
 
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
@@ -134,6 +142,12 @@ private:
         // it to 1...
     }
 
+    //The disposer object function
+    struct delete_disposer
+    {
+        void operator()(lru_entry* delete_this) { delete delete_this; }
+    };
+
     /**
      * Shrink the cache to be at most 90% of the maximum allowed size after the
      * new value is added to it.
@@ -147,26 +161,27 @@ private:
 
         // Delete from the cache
         for (--it; _cached_data_size > water_mark; --it) {
-            auto c_it = _cache.find(*it);
+            auto c_it = _cache.find(it->key);
             DEBUG_ASSERT(c_it != _cache.end(),
                          "Haven't found a cache entry for key [%s] "
                          "from the LRU list\n",
-                         it->c_str());
+                         it->key.c_str());
 
             _cached_data_size -= c_it->second.data.size();
             _cache.erase(c_it);
         }
 
         // Delete from the LRU list
-        _cache_lru.erase(++it, _cache_lru.end());
+        _cache_lru.erase_and_dispose(++it, _cache_lru.end(), delete_disposer());
     }
 
-    void move_to_lru_front(cache_iterator& it, memcache_key& str_key)
+    void move_to_lru_front(cache_iterator& it)
     {
-        // Move the key to the front if it's not already there
+        //  Move the key to the front if it's not already there
         if (it->second.lru_link != _cache_lru.begin()) {
+            auto entry_ptr = &(*it->second.lru_link);
             _cache_lru.erase(it->second.lru_link);
-            _cache_lru.push_front(str_key);
+            _cache_lru.push_front(*entry_ptr);
             it->second.lru_link = _cache_lru.begin();
         }
     }
