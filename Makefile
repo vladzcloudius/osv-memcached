@@ -35,7 +35,7 @@ autodepend = -MD -MT $@ -MP
 
 COMMON  = $(autodepend) -Wall -Werror -nostdinc -D __BSD_VISIBLE=1 -D_KERNEL 
 COMMON += -include $(src)/compiler/include/intrinsics.hh -Wformat=0 
-COMMON += -Wno-format-security -O3
+COMMON += -Wno-format-security -O3 -DNDEBUG
 
 CXXFLAGS = -std=gnu++11 $(COMMON) -shared -fPIC
 LDFLAGS = -shared -fPIC
