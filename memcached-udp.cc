@@ -144,7 +144,7 @@ int memcached::process_request(char* packet, u16 len)
                 it->second.exptime = (time_t)exptime;
 
                 // Move the key to the front of the LRU
-                move_to_lru_front(it);
+                move_to_lru_front(it, true);
             }
 
             _cached_data_size += bytes;

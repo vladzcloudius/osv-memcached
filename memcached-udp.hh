@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <osv/types.h>
 #include <osv/debug.hh>
+#include <osv/clock.hh>
 
 #include <bsd/sys/net/ethernet.h>
 #include <bsd/sys/net/if_types.h>
@@ -31,6 +32,7 @@
 #include <boost/intrusive/list.hpp>
 
 namespace bi = boost::intrusive;
+namespace oc = osv::clock;
 namespace osv_apps {
 
 class memcached {
@@ -42,10 +44,10 @@ public:
     typedef std::string memcache_key;
 
     struct lru_entry : public boost::intrusive::list_base_hook<> {
-        memcache_key key;
+        memcache_key             key;
+        oc::uptime::time_point   time;
 
-
-        lru_entry(std::string& k) : key(k) {}
+        lru_entry(std::string& k) : key(k), time(oc::uptime::now()) {}
     };
 
     typedef bi::list<lru_entry>                                lru_type;
@@ -175,14 +177,23 @@ private:
         _cache_lru.erase_and_dispose(++it, _cache_lru.end(), delete_disposer());
     }
 
-    void move_to_lru_front(cache_iterator& it)
+    void move_to_lru_front(cache_iterator& it, bool force = false)
     {
+        auto link_ptr = &it->second.lru_link;
+        auto entry_ptr = &(*(*link_ptr));
+
         //  Move the key to the front if it's not already there
-        if (it->second.lru_link != _cache_lru.begin()) {
-            auto entry_ptr = &(*it->second.lru_link);
-            _cache_lru.erase(it->second.lru_link);
-            _cache_lru.push_front(*entry_ptr);
-            it->second.lru_link = _cache_lru.begin();
+        if (*link_ptr != _cache_lru.begin()) {
+            auto now = oc::uptime::now();
+
+            if (force || ((now - entry_ptr->time).count() >
+                                                         lru_update_interval)) {
+
+                _cache_lru.erase(*link_ptr);
+                _cache_lru.push_front(*entry_ptr);
+                *link_ptr = _cache_lru.begin();
+                entry_ptr->time = now;
+            }
         }
     }
 
@@ -209,10 +220,19 @@ private:
 
     cache_type _cache;
 
-    /**
-     * LRU keys list: the most rececently used at the front.
-     */
+    //
+    // LRU keys list: the most rececently used at the front.
+    //
     lru_type _cache_lru;
+
+    //
+    // Don't update the LRU location of the entry more than once per this period
+    // of time in ns.
+    //
+    // Original memcached uses the same heuristics in order to reduce the noice
+    // when a few entries are frequently accessed.
+    //
+    static const long long lru_update_interval = 60 * 1000000000LL; // 60 seconds
 };
 
 }
