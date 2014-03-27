@@ -12,6 +12,7 @@
 #include <osv/types.h>
 #include <osv/debug.hh>
 #include <osv/clock.hh>
+#include <osv/ilog2.hh>
 
 #include <bsd/sys/net/ethernet.h>
 #include <bsd/sys/net/if_types.h>
@@ -46,8 +47,9 @@ public:
     struct lru_entry : public boost::intrusive::list_base_hook<> {
         memcache_key             key;
         oc::uptime::time_point   time;
+        u32                      mem_size;
 
-        lru_entry(std::string& k) : key(k), time(oc::uptime::now()) {}
+        lru_entry(std::string& k) : key(k), time(oc::uptime::now()), mem_size(0) {}
     };
 
     typedef bi::list<lru_entry>                                lru_type;
@@ -169,7 +171,7 @@ private:
                          "from the LRU list\n",
                          it->key.c_str());
 
-            _cached_data_size -= c_it->second.data.size();
+            _cached_data_size -= it->mem_size;
             _cache.erase(c_it);
         }
 
@@ -211,6 +213,30 @@ private:
         }
     }
 
+    /**
+     * The allocator will consume the appropriate power of 2 bytes per
+     * allocation, so we need to take it into the account when estimating the
+     * memory footprint.
+     * @param val_bytes
+     * @param key_bytes
+     *
+     * @return
+     */
+    u32 entry_mem_footprint(u32 val_bytes, u32 key_bytes)
+    {
+        u32 size = 0;
+
+        // LRU entry
+        size += (0x1UL << ilog2_roundup(sizeof(lru_entry)));
+        size += (0x1UL << ilog2_roundup(sizeof(std::string) + key_bytes));
+
+        // Cache entry
+        size += (0x1UL << ilog2_roundup(sizeof(cache_type::value_type)));
+        size += (0x1UL << ilog2_roundup(sizeof(std::string) + key_bytes));
+        size += (0x1UL << ilog2_roundup(sizeof(std::string) + val_bytes));
+
+        return size;
+    }
 
 
 private:

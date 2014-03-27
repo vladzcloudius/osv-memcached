@@ -23,6 +23,7 @@
 
 namespace osv_apps {
 
+//static u64 bucket_count;
 /**
  * TODO:
  *  1) Get rid of C-string handling.
@@ -115,13 +116,16 @@ int memcached::process_request(char* packet, u16 len)
                 return hdr_len + send_cmd_error(packet);
             }
 
-            // Shrink the cache if we're close to the max allowed size
-            if (_cached_data_size + bytes > _max_cache_size) {
-                shrink_cache(bytes);
-            }
-
             std::string str_key(key);
             std::string str_val(packet + 4 + end + 2, bytes);
+
+            u32 memory_needed = entry_mem_footprint(bytes, str_key.size());
+
+            // Shrink the cache if we're close to the max allowed size
+            if (_cached_data_size + memory_needed > _max_cache_size) {
+                shrink_cache(memory_needed);
+            }
+
             auto it = _cache.find(str_key);
 
             // If it's a new key - add it to the lru
@@ -129,14 +133,25 @@ int memcached::process_request(char* packet, u16 len)
                 lru_entry* entry = new lru_entry(str_key);
                 _cache_lru.push_front(*entry);
 
-                _cache[str_key] =
-                    { _cache_lru.begin(),
-                      str_val,
-                      (u32)flags,
-                      (time_t)exptime
-                    };
+                _cache[str_key] =   { _cache_lru.begin(),
+                                      str_val,
+                                      (u32)flags,
+                                      (time_t)exptime
+                                    };
+
+                entry->mem_size = memory_needed;
+
+                #if 0
+                if (bucket_count !=  _cache.bucket_count()) {
+                    bucket_count =  _cache.bucket_count();
+                    printf("bucket number is %d\n", bucket_count);
+                }
+                #endif
+
             } else {
-                _cached_data_size -= it->second.data.size();
+                _cached_data_size -= it->second.lru_link->mem_size;
+
+                it->second.lru_link->mem_size = memory_needed;
 
                 // Update the cache value
                 it->second.data = str_val;
@@ -147,7 +162,7 @@ int memcached::process_request(char* packet, u16 len)
                 move_to_lru_front(it, true);
             }
 
-            _cached_data_size += bytes;
+            _cached_data_size += memory_needed;
 
             //std::cerr<<"got set with " << bytes << " bytes\n";
             return hdr_len + send_cmd_stored(packet);
