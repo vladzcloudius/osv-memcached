@@ -78,7 +78,7 @@ public:
 
     size_t request_memory(size_t n)
     {
-        return shrink_cache();
+        return shrink_cache(n);
     }
 
     size_t release_memory(size_t n)
@@ -166,12 +166,14 @@ private:
     /**
      * Shrink the cache by 10% of the current size.
      */
-    u64 shrink_cache(void)
+    u64 shrink_cache(size_t n)
     {
         auto it = _cache_lru.end();
         u64 water_mark = (_cached_data_size / 10) * 9;
         u64 to_release = _cached_data_size - water_mark;
         u64 released_amount = 0;
+
+        to_release = MAX(to_release, n);
 
         //
         // Mutex is a recursive lock - prevent the recursive locking since it's
