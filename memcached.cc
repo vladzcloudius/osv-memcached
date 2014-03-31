@@ -6,13 +6,9 @@
 
 using namespace std;
 
-static constexpr u64 default_max_cache_size = 64 * 1024 * 1024; // 64MB
-
 static inline void usage()
 {
-    cout<<endl<<endl<<" Usage: osv-memcached [-m <num>]"<<endl<<endl;
-    cout<<"    -m <num> - Use max <num> MB of memory to use for object storage;"
-          " the default is 64MB."<<endl;
+    cout<<endl<<endl<<" Usage: osv-memcached"<<endl<<endl;
     cout<<endl;
 }
 
@@ -28,30 +24,18 @@ static inline int memcached_pf_hook(
 
 int main(int argc, char* argv[])
 {
+    #if 0
     int i;
-    u64 max_cache_size = default_max_cache_size;
 
     // Parse args
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-m")) {
-            i++;
-            long tmp = stol(argv[i]);
-            if (tmp < 0) {
-                cerr<<"Bad format for the cache size: "<<argv[i]<<endl;
-                usage();
-                return 1;
-            }
-
-            max_cache_size = static_cast<u64>(tmp) * 1024 * 1024;
-            cout<<"osv-memcached: MAX data cache size is "<<tmp<<"MB"<<endl;
-        } else {
-            cerr<<"Unknown parameter: "<<argv[i]<<endl;
-            usage();
-            return 1;
-        }
+        cerr<<"Unknown parameter: "<<argv[i]<<endl;
+        usage();
+        return 1;
     }
+    #endif
 
-    osv_apps::memcached memcached(max_cache_size);
+    osv_apps::memcached memcached;
 
     // Add a PF filter for the memcached
     pfil_add_hook(memcached_pf_hook, (void*)&memcached, PFIL_IN | PFIL_WAITOK,

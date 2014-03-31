@@ -13,6 +13,7 @@
 #include <osv/debug.hh>
 #include <osv/clock.hh>
 #include <osv/ilog2.hh>
+#include <osv/mempool.hh>
 
 #include <bsd/sys/net/ethernet.h>
 #include <bsd/sys/net/if_types.h>
@@ -36,7 +37,7 @@ namespace bi = boost::intrusive;
 namespace oc = osv::clock;
 namespace osv_apps {
 
-class memcached {
+class memcached : public memory:: shrinker {
 public:
     //
     // Note: protocol specifies the key as limited to 250 bytes, no spaces or
@@ -69,12 +70,22 @@ public:
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
     typedef cache_type::iterator                             cache_iterator;
 
-    memcached(u64 max_cache_size) :
+    explicit memcached() : memory::shrinker("osv-memcached"),
         _htons_1(ntohs(1)),
-        _max_cache_size(max_cache_size),
         _cached_data_size(0) {}
 
     bool filter(struct ifnet* ifn, mbuf* m);
+
+    size_t request_memory(size_t n)
+    {
+        return shrink_cache();
+    }
+
+    size_t release_memory(size_t n)
+    {
+        return 0;
+    }
+
 private:
     // The first 8 bytes of each UDP memcached request is the following header,
     // composed of four 16-bit integers in network byte order:
@@ -153,30 +164,45 @@ private:
     };
 
     /**
-     * Shrink the cache to be at most 90% of the maximum allowed size after the
-     * new value is added to it.
-     *
-     * @param new_data_len size of the new value to be stored in the cache
+     * Shrink the cache by 10% of the current size.
      */
-    void shrink_cache(u16 new_data_len)
+    u64 shrink_cache(void)
     {
         auto it = _cache_lru.end();
-        u64 water_mark = (_max_cache_size / 10) * 9 - new_data_len;
+        u64 water_mark = (_cached_data_size / 10) * 9;
+        u64 to_release = _cached_data_size - water_mark;
+        u64 released_amount = 0;
 
-        // Delete from the cache
-        for (--it; _cached_data_size > water_mark; --it) {
-            auto c_it = _cache.find(it->key);
-            DEBUG_ASSERT(c_it != _cache.end(),
-                         "Haven't found a cache entry for key [%s] "
-                         "from the LRU list\n",
-                         it->key.c_str());
+        //
+        // Mutex is a recursive lock - prevent the recursive locking since it's
+        // exactly the case we are trying to avoid
+        //
+        if (!shrinker_lock.owned() && shrinker_lock.try_lock()) {
 
-            _cached_data_size -= it->mem_size;
-            _cache.erase(c_it);
+            // Delete from the cache
+            for (--it; released_amount < to_release; --it) {
+                auto c_it = _cache.find(it->key);
+                DEBUG_ASSERT(c_it != _cache.end(),
+                             "Haven't found a cache entry for key [%s] "
+                             "from the LRU list\n",
+                             it->key.c_str());
+
+                released_amount += it->mem_size;
+                _cache.erase(c_it);
+            }
+
+            // Delete from the LRU list
+            _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
+                                         delete_disposer());
+
+            shrinker_lock.unlock();
+
+            _cached_data_size -= released_amount;
         }
 
-        // Delete from the LRU list
-        _cache_lru.erase_and_dispose(++it, _cache_lru.end(), delete_disposer());
+        //printf("Released %ld bytes\n", released_amount);
+
+        return released_amount;
     }
 
     void move_to_lru_front(cache_iterator& it, bool force = false)
@@ -238,11 +264,10 @@ private:
         return size;
     }
 
-
 private:
     const u16 _htons_1;
-    u64 _max_cache_size;
     u64 _cached_data_size;
+    lockfree::mutex shrinker_lock;
 
     cache_type _cache;
 

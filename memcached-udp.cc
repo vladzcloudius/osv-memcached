@@ -66,16 +66,20 @@ int memcached::process_request(char* packet, u16 len)
             }
             // TODO: do we need to copy the string just for find???
             // Need to be able to search without copy... HOW?
-            auto it = _cache.find(std::string(key));
-            if (it == _cache.end()) {
-                return hdr_len + send_cmd_end(packet);
-            } else {
-                //std::cerr << "found\n";
-                char* reply = packet;
-                strcpy(reply, "VALUE ");
-                char *r = reply + 6;
 
-                std::string str_key(key);
+            char* reply = packet;
+            char *r = reply + 6;
+            std::string str_key(key);
+
+            WITH_LOCK(shrinker_lock) {
+                auto it = _cache.find(str_key);
+
+                if (it == _cache.end()) {
+                    return hdr_len + send_cmd_end(packet);
+                }
+
+                //std::cerr << "found\n";
+                strcpy(reply, "VALUE ");
 
                 strcpy(r, str_key.c_str());
                 r += str_key.size();
@@ -92,9 +96,9 @@ int memcached::process_request(char* packet, u16 len)
 
                 // Move the key to the front of the LRU
                 move_to_lru_front(it);
-
-                return hdr_len + (r - reply);
             }
+
+            return hdr_len + (r - reply);
         } else if(!strncmp(packet, "set", 3)) {
             //std::cerr<<"got 'set'\n";
             unsigned long flags, exptime, bytes;
@@ -121,45 +125,42 @@ int memcached::process_request(char* packet, u16 len)
 
             u32 memory_needed = entry_mem_footprint(bytes, str_key.size());
 
-            // Shrink the cache if we're close to the max allowed size
-            if (_cached_data_size + memory_needed > _max_cache_size) {
-                shrink_cache(memory_needed);
-            }
+            WITH_LOCK(shrinker_lock) {
+                auto it = _cache.find(str_key);
 
-            auto it = _cache.find(str_key);
+                // If it's a new key - add it to the lru
+                if (it == _cache.end()) {
+                    lru_entry* entry = new lru_entry(str_key);
+                    _cache_lru.push_front(*entry);
 
-            // If it's a new key - add it to the lru
-            if (it == _cache.end()) {
-                lru_entry* entry = new lru_entry(str_key);
-                _cache_lru.push_front(*entry);
+                    _cache[str_key] =   { _cache_lru.begin(),
+                                          str_val,
+                                          (u32)flags,
+                                          (time_t)exptime
+                                        };
 
-                _cache[str_key] =   { _cache_lru.begin(),
-                                      str_val,
-                                      (u32)flags,
-                                      (time_t)exptime
-                                    };
+                    entry->mem_size = memory_needed;
 
-                entry->mem_size = memory_needed;
+                    #if 0
+                    if (bucket_count !=  _cache.bucket_count()) {
+                        bucket_count =  _cache.bucket_count();
+                        printf("bucket number is %d\n", bucket_count);
+                    }
+                    #endif
 
-                #if 0
-                if (bucket_count !=  _cache.bucket_count()) {
-                    bucket_count =  _cache.bucket_count();
-                    printf("bucket number is %d\n", bucket_count);
+                } else {
+                    _cached_data_size -= it->second.lru_link->mem_size;
+
+                    it->second.lru_link->mem_size = memory_needed;
+
+                    // Update the cache value
+                    it->second.data = str_val;
+                    it->second.flags = (u32)flags;
+                    it->second.exptime = (time_t)exptime;
+
+                    // Move the key to the front of the LRU
+                    move_to_lru_front(it, true);
                 }
-                #endif
-
-            } else {
-                _cached_data_size -= it->second.lru_link->mem_size;
-
-                it->second.lru_link->mem_size = memory_needed;
-
-                // Update the cache value
-                it->second.data = str_val;
-                it->second.flags = (u32)flags;
-                it->second.exptime = (time_t)exptime;
-
-                // Move the key to the front of the LRU
-                move_to_lru_front(it, true);
             }
 
             _cached_data_size += memory_needed;
