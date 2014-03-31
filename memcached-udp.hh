@@ -176,10 +176,12 @@ private:
         to_release = MAX(to_release, n);
 
         //
-        // Mutex is a recursive lock - prevent the recursive locking since it's
-        // exactly the case we are trying to avoid
+        // Don't block here to prevent a dead-lock:
         //
-        if (!shrinker_lock.owned() && shrinker_lock.try_lock()) {
+        // allocation in a critical section may trigger a shrinker and will
+        // block until it ends - deadlock.
+        //
+        if (shrinker_lock.try_lock()) {
 
             // Delete from the cache
             for (--it; released_amount < to_release; --it) {
