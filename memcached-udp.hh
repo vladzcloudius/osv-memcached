@@ -88,17 +88,28 @@ private:
         // request_id is an opaque value that the server needs to echo back
         // to the client.
         u16 request_id;
+        //
         // If the request or response spans n datagrams, number_of_datagrams
         // contains n, and sequence_number goes from 0 to n-1.
+        //
         // Memcached does not currently support multi-datagram requests, so
-        // neither do we have to. Memcached does support multi-datagram responses,
-        // but the documentation suggest that TCP is more suitable for this
-        // use case anyway, so we don't support this case as well.
-        // This means we can always reuse a request header as the response header!
+        // neither do we have to. Memcached does support multi-datagram
+        // responses, but the documentation suggest that TCP is more suitable
+        // for this use case anyway, so we don't support this case as well.
+        //
+        // This means we can always reuse a request header as the response
+        // header!
+        //
         u16 sequence_number_n;
         u16 number_of_datagrams_n;
         // Reserved for future use, should be 0
         u16 reserved;
+    };
+
+    //The disposer object function
+    struct delete_disposer
+    {
+        void operator()(lru_entry* delete_this) { delete delete_this; }
     };
 
     /**
@@ -152,66 +163,12 @@ private:
         // it to 1...
     }
 
-    //The disposer object function
-    struct delete_disposer
-    {
-        void operator()(lru_entry* delete_this) { delete delete_this; }
-    };
-
     /**
      * Shrink the cache by 10% of the current size.
      */
-    u64 shrink_cache_locked(size_t n)
-    {
-        auto it = _cache_lru.end();
-        u64 water_mark = (_cached_data_size / 10) * 9;
-        u64 to_release = _cached_data_size - water_mark;
-        u64 released_amount = 0;
+    u64 shrink_cache_locked(size_t n);
 
-        to_release = MAX(to_release, n);
-
-        // Delete from the cache
-        for (--it; released_amount < to_release; --it) {
-            auto c_it = _cache.find(it->key);
-            DEBUG_ASSERT(c_it != _cache.end(),
-                         "Haven't found a cache entry for key [%s] "
-                         "from the LRU list\n",
-                         it->key.c_str());
-
-            released_amount += it->mem_size;
-            _cache.erase(c_it);
-        }
-
-        // Delete from the LRU list
-        _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
-                                     delete_disposer());
-
-        _cached_data_size -= released_amount;
-
-        //printf("Released %ld bytes\n", released_amount);
-
-        return released_amount;
-    }
-
-    void move_to_lru_front(cache_iterator& it, bool force = false)
-    {
-        auto link_ptr = &it->second.lru_link;
-        auto entry_ptr = &(*(*link_ptr));
-
-        //  Move the key to the front if it's not already there
-        if (*link_ptr != _cache_lru.begin()) {
-            auto now = oc::uptime::now();
-
-            if (force || ((now - entry_ptr->time).count() >
-                                                         lru_update_interval)) {
-
-                _cache_lru.erase(*link_ptr);
-                _cache_lru.push_front(*entry_ptr);
-                *link_ptr = _cache_lru.begin();
-                entry_ptr->time = now;
-            }
-        }
-    }
+    void move_to_lru_front(cache_iterator& it, bool force = false);
 
     void dump_mbuf(mbuf* m)
     {
@@ -228,13 +185,16 @@ private:
     }
 
     /**
-     * The allocator will consume the appropriate power of 2 bytes per
+     * Calculate the approximate bytes number needed for cache entry
+     *
+     * @note The allocator will consume the appropriate power of 2 bytes per
      * allocation, so we need to take it into the account when estimating the
      * memory footprint.
      * @param val_bytes
      * @param key_bytes
      *
-     * @return
+     * @return the estimate of bytes number that will be consumed for this new
+     *         cache entry
      */
     u32 entry_mem_footprint(u32 val_bytes, u32 key_bytes)
     {
@@ -270,7 +230,7 @@ private:
     // Original memcached uses the same heuristics in order to reduce the noice
     // when a few entries are frequently accessed.
     //
-    static const long long lru_update_interval = 60 * 1000000000LL; // 60 seconds
+    static const long long lru_update_interval = 60 * 1000000000LL;// 60 seconds
 };
 
 }

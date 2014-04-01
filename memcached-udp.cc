@@ -295,5 +295,57 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
     return true;
 }
 
-} // namespace osv
+u64 memcached::shrink_cache_locked(size_t n)
+{
+    auto it = _cache_lru.end();
+    u64 water_mark = (_cached_data_size / 10) * 9;
+    u64 to_release = _cached_data_size - water_mark;
+    u64 released_amount = 0;
+
+    to_release = MAX(to_release, n);
+
+    // Delete from the cache
+    for (--it; released_amount < to_release; --it) {
+        auto c_it = _cache.find(it->key);
+        DEBUG_ASSERT(c_it != _cache.end(),
+                     "Haven't found a cache entry for key [%s] "
+                     "from the LRU list\n",
+                     it->key.c_str());
+
+        released_amount += it->mem_size;
+        _cache.erase(c_it);
+    }
+
+    // Delete from the LRU list
+    _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
+                                 delete_disposer());
+
+    _cached_data_size -= released_amount;
+
+    //printf("Released %ld bytes\n", released_amount);
+
+    return released_amount;
+}
+
+void memcached::move_to_lru_front(cache_iterator& it, bool force)
+{
+    auto link_ptr = &it->second.lru_link;
+    auto entry_ptr = &(*(*link_ptr));
+
+    //  Move the key to the front if it's not already there
+    if (*link_ptr != _cache_lru.begin()) {
+        auto now = oc::uptime::now();
+
+        if (force || ((now - entry_ptr->time).count() >
+                                                     lru_update_interval)) {
+
+            _cache_lru.erase(*link_ptr);
+            _cache_lru.push_front(*entry_ptr);
+            *link_ptr = _cache_lru.begin();
+            entry_ptr->time = now;
+        }
+    }
+}
+
+} // namespace osv_apps
 
