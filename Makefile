@@ -41,7 +41,6 @@ CXXFLAGS = -std=gnu++11 $(COMMON) -shared -fPIC
 LDFLAGS = -shared -fPIC
 
 SOURCES = memcached-udp.cc memcached.cc
-HEADERS = memcached-udp.hh
 
 OBJ = $(SOURCES:%.cc=%.o)
 
