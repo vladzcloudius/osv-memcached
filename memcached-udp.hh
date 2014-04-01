@@ -33,11 +33,13 @@
 
 #include <boost/intrusive/list.hpp>
 
+#include <locked_shrinker.hh>
+
 namespace bi = boost::intrusive;
 namespace oc = osv::clock;
 namespace osv_apps {
 
-class memcached : public memory:: shrinker {
+class memcached {
 public:
     //
     // Note: protocol specifies the key as limited to 250 bytes, no spaces or
@@ -70,21 +72,14 @@ public:
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
     typedef cache_type::iterator                             cache_iterator;
 
-    explicit memcached() : memory::shrinker("osv-memcached"),
+    explicit memcached() :
         _htons_1(ntohs(1)),
-        _cached_data_size(0) {}
+        _cached_data_size(0),
+        _locked_shrinker(
+            [this] (size_t n) { return this->shrink_cache_locked(n); })
+        {}
 
     bool filter(struct ifnet* ifn, mbuf* m);
-
-    size_t request_memory(size_t n)
-    {
-        return shrink_cache(n);
-    }
-
-    size_t release_memory(size_t n)
-    {
-        return 0;
-    }
 
 private:
     // The first 8 bytes of each UDP memcached request is the following header,
@@ -166,7 +161,7 @@ private:
     /**
      * Shrink the cache by 10% of the current size.
      */
-    u64 shrink_cache(size_t n)
+    u64 shrink_cache_locked(size_t n)
     {
         auto it = _cache_lru.end();
         u64 water_mark = (_cached_data_size / 10) * 9;
@@ -175,34 +170,23 @@ private:
 
         to_release = MAX(to_release, n);
 
-        //
-        // Don't block here to prevent a dead-lock:
-        //
-        // allocation in a critical section may trigger a shrinker and will
-        // block until it ends - deadlock.
-        //
-        if (shrinker_lock.try_lock()) {
+        // Delete from the cache
+        for (--it; released_amount < to_release; --it) {
+            auto c_it = _cache.find(it->key);
+            DEBUG_ASSERT(c_it != _cache.end(),
+                         "Haven't found a cache entry for key [%s] "
+                         "from the LRU list\n",
+                         it->key.c_str());
 
-            // Delete from the cache
-            for (--it; released_amount < to_release; --it) {
-                auto c_it = _cache.find(it->key);
-                DEBUG_ASSERT(c_it != _cache.end(),
-                             "Haven't found a cache entry for key [%s] "
-                             "from the LRU list\n",
-                             it->key.c_str());
-
-                released_amount += it->mem_size;
-                _cache.erase(c_it);
-            }
-
-            // Delete from the LRU list
-            _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
-                                         delete_disposer());
-
-            shrinker_lock.unlock();
-
-            _cached_data_size -= released_amount;
+            released_amount += it->mem_size;
+            _cache.erase(c_it);
         }
+
+        // Delete from the LRU list
+        _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
+                                     delete_disposer());
+
+        _cached_data_size -= released_amount;
 
         //printf("Released %ld bytes\n", released_amount);
 
@@ -271,8 +255,7 @@ private:
 private:
     const u16 _htons_1;
     u64 _cached_data_size;
-    lockfree::mutex shrinker_lock;
-
+    locked_shrinker _locked_shrinker;
     cache_type _cache;
 
     //

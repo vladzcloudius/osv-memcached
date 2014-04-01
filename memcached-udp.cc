@@ -71,7 +71,7 @@ int memcached::process_request(char* packet, u16 len)
             char *r = reply + 6;
             std::string str_key(key);
 
-            WITH_LOCK(shrinker_lock) {
+            WITH_LOCK(_locked_shrinker) {
                 auto it = _cache.find(str_key);
 
                 if (it == _cache.end()) {
@@ -125,7 +125,7 @@ int memcached::process_request(char* packet, u16 len)
 
             u32 memory_needed = entry_mem_footprint(bytes, str_key.size());
 
-            WITH_LOCK(shrinker_lock) {
+            WITH_LOCK(_locked_shrinker) {
                 auto it = _cache.find(str_key);
 
                 // If it's a new key - add it to the lru
