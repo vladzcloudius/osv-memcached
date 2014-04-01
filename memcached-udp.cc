@@ -123,7 +123,7 @@ int memcached::process_request(char* packet, u16 len)
             std::string str_key(key);
             std::string str_val(packet + 4 + end + 2, bytes);
 
-            u32 memory_needed = entry_mem_footprint(bytes, str_key.size());
+            size_t memory_needed = entry_mem_footprint(bytes, str_key.size());
 
             WITH_LOCK(_locked_shrinker) {
                 auto it = _cache.find(str_key);
@@ -295,12 +295,12 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
     return true;
 }
 
-u64 memcached::shrink_cache_locked(size_t n)
+size_t memcached::shrink_cache_locked(size_t n)
 {
     auto it = _cache_lru.end();
-    u64 water_mark = (_cached_data_size / 10) * 9;
-    u64 to_release = _cached_data_size - water_mark;
-    u64 released_amount = 0;
+    size_t water_mark = (_cached_data_size / 10) * 9;
+    size_t to_release = _cached_data_size - water_mark;
+    size_t released_amount = 0;
 
     to_release = MAX(to_release, n);
 

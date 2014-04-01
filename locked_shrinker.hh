@@ -28,7 +28,7 @@ namespace osv_apps {
  */
 class locked_shrinker : public memory::shrinker {
 public:
-    locked_shrinker(std::function<u64 (size_t)> func) :
+    locked_shrinker(std::function<size_t (size_t)> func) :
         memory::shrinker("osv-memcached-locked-shrinker"),
         _shrink_cache_locked_func(func) {}
 
@@ -56,7 +56,7 @@ public:
         //
         if (_lock.try_lock()) {
 
-            u64 released_amount = _shrink_cache_locked_func(n);
+            size_t released_amount = _shrink_cache_locked_func(n);
             _bytes_to_release = 0;
 
             _lock.unlock();
@@ -76,7 +76,7 @@ public:
 
 private:
     lockfree::mutex _lock;
-    std::function<u64 (size_t)> _shrink_cache_locked_func;
+    std::function<size_t (size_t)> _shrink_cache_locked_func;
     size_t _bytes_to_release = 0;
 };
 

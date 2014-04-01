@@ -50,7 +50,7 @@ public:
     struct lru_entry : public boost::intrusive::list_base_hook<> {
         memcache_key             key;
         oc::uptime::time_point   time;
-        u32                      mem_size;
+        size_t                   mem_size;
 
         lru_entry(std::string& k) : key(k), time(oc::uptime::now()), mem_size(0) {}
     };
@@ -166,7 +166,7 @@ private:
     /**
      * Shrink the cache by 10% of the current size.
      */
-    u64 shrink_cache_locked(size_t n);
+    size_t shrink_cache_locked(size_t n);
 
     void move_to_lru_front(cache_iterator& it, bool force = false);
 
@@ -196,9 +196,9 @@ private:
      * @return the estimate of bytes number that will be consumed for this new
      *         cache entry
      */
-    u32 entry_mem_footprint(u32 val_bytes, u32 key_bytes)
+    size_t entry_mem_footprint(u32 val_bytes, u32 key_bytes)
     {
-        u32 size = 0;
+        size_t size = 0;
 
         // LRU entry
         size += (0x1UL << ilog2_roundup(sizeof(lru_entry)));
@@ -214,7 +214,7 @@ private:
 
 private:
     const u16 _htons_1;
-    u64 _cached_data_size;
+    size_t _cached_data_size;
     locked_shrinker _locked_shrinker;
     cache_type _cache;
 
