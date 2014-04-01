@@ -303,6 +303,7 @@ size_t memcached::shrink_cache_locked(size_t n)
     size_t released_amount = 0;
 
     to_release = MAX(to_release, n);
+    to_release = MIN(to_release, _cached_data_size);
 
     // Delete from the cache
     for (--it; released_amount < to_release; --it) {
