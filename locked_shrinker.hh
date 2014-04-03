@@ -46,7 +46,7 @@ public:
 
     void unlock() { _lock.unlock(); }
 
-    size_t request_memory(size_t n)
+    size_t request_memory(size_t n, bool hard)
     {
         //
         // Don't block here to prevent a dead-lock:
@@ -67,11 +67,6 @@ public:
 
             return 0;
         }
-    }
-
-    size_t release_memory(size_t n)
-    {
-        return 0;
     }
 
 private:
