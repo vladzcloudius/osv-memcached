@@ -259,7 +259,8 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
     }
 
     // Set new mbuf len
-    m->m_hdr.mh_len = ip_size + sizeof(udphdr) + data_len;
+    m->M_dat.MH.MH_pkthdr.len = m->m_hdr.mh_len =
+        ip_size + sizeof(udphdr) + data_len;
 
     reverse_direction(m, ether_hdr, ip_hdr, ip_size, udp_hdr, (u16)data_len);
 
@@ -278,9 +279,7 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
     // Adjust the mbuf to point to the ethernet header
     m->m_hdr.mh_data -= ETHER_HDR_LEN;
 	m->m_hdr.mh_len  += ETHER_HDR_LEN;
-
-	if (m->m_hdr.mh_flags & M_PKTHDR)
-		m->M_dat.MH.MH_pkthdr.len += ETHER_HDR_LEN;
+	m->M_dat.MH.MH_pkthdr.len += ETHER_HDR_LEN;
 
     ifn->if_transmit(ifn, m);
 
