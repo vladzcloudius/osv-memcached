@@ -30,6 +30,7 @@
 
 #include <iostream>
 #include <unordered_map>
+#include <vector>
 
 #include <boost/intrusive/list.hpp>
 
@@ -72,16 +73,29 @@ public:
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
     typedef cache_type::iterator                             cache_iterator;
 
-    explicit memcached() :
-        _htons_1(ntohs(1)),
-        _cached_data_size(0),
-        _locked_shrinker(
-            [this] (size_t n) { return this->shrink_cache_locked(n); })
-        {}
+
+    explicit memcached();
 
     bool filter(struct ifnet* ifn, mbuf* m);
 
 private:
+    enum commands {
+        GET,
+        DELETE,
+        SET,
+        FLUSH,
+        DECR,
+        INCR,
+        ADD,
+        GET_STATS,
+        GET_MULTI,
+        SET_MULTI,
+        REPLACE,
+        CAS,
+        ADD_MULTI,
+        COMMANDS_CNT
+    };
+
     // The first 8 bytes of each UDP memcached request is the following header,
     // composed of four 16-bit integers in network byte order:
     struct memcached_header {
@@ -212,8 +226,24 @@ private:
         return size;
     }
 
+    /**
+     * Find the end of the current field limited by either a space or '\r'
+     * @param start first character of the current field
+     * @param max_len Maximum field length
+     *
+     * @return the length of the current field not including the space or
+     *         end-of-line charachter at the end.
+     */
+    u16 get_field_len(char* const start, const u16 max_len) const;
+
+    // Command handlers
+    int do_get(char* packet, u16 len);
+    int do_set(char* packet, u16 len);
+    int handle_command(commands cmd, char* packet, u16 len);
+
 private:
     const u16 _htons_1;
+    const size_t _hdr_len = sizeof(memcached_header);
     size_t _cached_data_size;
     locked_shrinker _locked_shrinker;
     cache_type _cache;
@@ -222,6 +252,8 @@ private:
     // LRU keys list: the most rececently used at the front.
     //
     lru_type _cache_lru;
+
+    std::unordered_map<std::string, commands> cmd_hash;
 
     //
     // Don't update the LRU location of the entry more than once per this period

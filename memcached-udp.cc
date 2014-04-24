@@ -20,8 +20,160 @@
 
 #include <machine/in_cksum.h>
 
+using namespace std;
 
 namespace osv_apps {
+
+memcached::memcached() :
+        _htons_1(ntohs(1)),
+        _cached_data_size(0),
+        _locked_shrinker(
+            [this] (size_t n) { return this->shrink_cache_locked(n); })
+{
+    // Initialize commands hash (trie-based)
+    cmd_hash["get"]       = GET;
+    cmd_hash["delete"]    = DELETE;
+    cmd_hash["set"]       = SET;
+    cmd_hash["flush"]     = FLUSH;
+    cmd_hash["decr"]      = DECR;
+    cmd_hash["incr"]      = INCR;
+    cmd_hash["add"]       = ADD;
+    cmd_hash["get_stats"] = GET_STATS;
+    cmd_hash["get_multi"] = GET_MULTI;
+    cmd_hash["set_multi"] = SET_MULTI;
+    cmd_hash["replace"]   = REPLACE;
+    cmd_hash["cas"]       = CAS;
+    cmd_hash["add_multi"] = ADD_MULTI;
+}
+
+inline u16 memcached::get_field_len(char* const start, const u16 max_len) const
+{
+    char *p = start, *pastend = start + max_len;
+
+    while ((*p != ' ') && (*p != '\r') && (p < pastend)) {
+        p++;
+    }
+
+    return p - start;
+}
+
+inline int memcached::do_get(char* packet, u16 len)
+{
+    //cerr<<"got 'get'\n";
+    char key[251];
+    // TODO: do this in a loop to support multiple keys on one command
+    auto z = sscanf(packet + 4, "%250s", &key);
+    if (z != 1) {
+        return _hdr_len + send_cmd_error(packet);
+    }
+    // TODO: do we need to copy the string just for find???
+    // Need to be able to search without copy... HOW?
+
+    char* reply = packet;
+    char *r = reply + 6;
+    string str_key(key);
+
+    WITH_LOCK(_locked_shrinker) {
+        auto it = _cache.find(str_key);
+
+        if (it == _cache.end()) {
+            return _hdr_len + send_cmd_end(packet);
+        }
+
+        //cerr << "found\n";
+        strcpy(reply, "VALUE ");
+
+        strcpy(r, str_key.c_str());
+        r += str_key.size();
+
+        int data_len = it->second.data.length();
+        r += sprintf(r, " %ld %d\r\n", it->second.flags, data_len);
+
+        // Value
+        memcpy(r, it->second.data.c_str(), data_len);
+        r += data_len;
+
+        strcpy(r, "\r\nEND\r\n");
+        r += 7;
+
+        // Move the key to the front of the LRU
+        move_to_lru_front(it);
+    }
+
+    return _hdr_len + (r - reply);
+}
+
+inline int memcached::do_set(char* packet, u16 len)
+{
+    //cerr<<"got 'set'\n";
+    unsigned long flags, exptime, bytes;
+    size_t end;
+    char key[251];
+    auto z =
+      sscanf(packet+4, "%250s %ld %ld %ld%n",
+                       &key, &flags, &exptime, &bytes, &end);
+
+    end &= 0xffffffff;
+
+    if (z != 4) {
+        return _hdr_len + send_cmd_error(packet);
+    }
+    // TODO: check if there is "noreply" at 'end'
+    if (len < 4 + end + 2 + bytes) {
+        cerr << "got too small packet ?! len="<<len<<", end="
+            <<end<<", bytes="<<bytes<<"\n";
+        return _hdr_len + send_cmd_error(packet);
+    }
+
+    string str_key(key);
+    string str_val(packet + 4 + end + 2, bytes);
+
+    size_t memory_needed = entry_mem_footprint(bytes, str_key.size());
+
+    WITH_LOCK(_locked_shrinker) {
+        auto it = _cache.find(str_key);
+
+        // If it's a new key - add it to the lru
+        if (it == _cache.end()) {
+            lru_entry* entry = new lru_entry(str_key);
+            _cache_lru.push_front(*entry);
+
+            _cache[str_key] =   { _cache_lru.begin(),
+                                  str_val,
+                                  (u32)flags,
+                                  (time_t)exptime
+                                };
+
+            entry->mem_size = memory_needed;
+
+            #if 0
+            if (bucket_count !=  _cache.bucket_count()) {
+                bucket_count =  _cache.bucket_count();
+                printf("bucket number is %d\n", bucket_count);
+            }
+            #endif
+
+        } else {
+            _cached_data_size -= it->second.lru_link->mem_size;
+
+            it->second.lru_link->mem_size = memory_needed;
+
+            // Update the cache value
+            it->second.data = str_val;
+            it->second.flags = (u32)flags;
+            it->second.exptime = (time_t)exptime;
+
+            // Move the key to the front of the LRU
+            move_to_lru_front(it, true);
+        }
+    }
+
+    _cached_data_size += memory_needed;
+
+    //cerr<<"got set with " << bytes << " bytes\n";
+    return _hdr_len + send_cmd_stored(packet);
+}
+
 
 //static u64 bucket_count;
 /**
@@ -36,143 +188,48 @@ namespace osv_apps {
 int memcached::process_request(char* packet, u16 len)
 {
     memcached_header* header = reinterpret_cast<memcached_header*>(packet);
-    size_t hdr_len = sizeof(memcached_header);
 
-    if ((len < hdr_len) || memcached_header_invalid(header)) {
+    if ((len < _hdr_len) || memcached_header_invalid(header)) {
         // Cannot send reply, have no sequence number to reply to..
-        std::cerr << "unknown packet format. len=" << len << "\n";
+        cerr << "unknown packet format. len=" << len << "\n";
         return -1;
     }
-    len -= hdr_len;
-    packet += hdr_len;
+    len -= _hdr_len;
+    packet += _hdr_len;
 
-    // TODO: consider a more efficient parser...
-    const char *p = packet, *pastend = packet + len;
-    while (*p != ' ' && *p != '\r' && p < pastend) {
-        p++;
-    }
-    auto n = p - packet;
-    if (p == pastend) {
-        return hdr_len + send_cmd_error(packet);
-    }
-    if (n == 3) {
-        if(!strncmp(packet, "get", 3)) {
-            //std::cerr<<"got 'get'\n";
-            char key[251];
-            // TODO: do this in a loop to support multiple keys on one command
-            auto z = sscanf(packet + 4, "%250s", &key);
-            if (z != 1) {
-                return hdr_len + send_cmd_error(packet);
-            }
-            // TODO: do we need to copy the string just for find???
-            // Need to be able to search without copy... HOW?
+    //
+    // Command should not end at the packet end - there should be at least \r\n
+    // following it.
+    //
+    u16 cmd_len = get_field_len(packet, len);
 
-            char* reply = packet;
-            char *r = reply + 6;
-            std::string str_key(key);
-
-            WITH_LOCK(_locked_shrinker) {
-                auto it = _cache.find(str_key);
-
-                if (it == _cache.end()) {
-                    return hdr_len + send_cmd_end(packet);
-                }
-
-                //std::cerr << "found\n";
-                strcpy(reply, "VALUE ");
-
-                strcpy(r, str_key.c_str());
-                r += str_key.size();
-
-                int data_len = it->second.data.length();
-                r += sprintf(r, " %ld %d\r\n", it->second.flags, data_len);
-
-                // Value
-                memcpy(r, it->second.data.c_str(), data_len);
-                r += data_len;
-
-                strcpy(r, "\r\nEND\r\n");
-                r += 7;
-
-                // Move the key to the front of the LRU
-                move_to_lru_front(it);
-            }
-
-            return hdr_len + (r - reply);
-        } else if(!strncmp(packet, "set", 3)) {
-            //std::cerr<<"got 'set'\n";
-            unsigned long flags, exptime, bytes;
-            size_t end;
-            char key[251];
-            auto z =
-              sscanf(packet+4, "%250s %ld %ld %ld%n",
-                               &key, &flags, &exptime, &bytes, &end);
-
-            end &= 0xffffffff;
-
-            if (z != 4) {
-                return hdr_len + send_cmd_error(packet);
-            }
-            // TODO: check if there is "noreply" at 'end'
-            if (len < 4 + end + 2 + bytes) {
-                std::cerr << "got too small packet ?! len="<<len<<", end="
-                    <<end<<", bytes="<<bytes<<"\n";
-                return hdr_len + send_cmd_error(packet);
-            }
-
-            std::string str_key(key);
-            std::string str_val(packet + 4 + end + 2, bytes);
-
-            size_t memory_needed = entry_mem_footprint(bytes, str_key.size());
-
-            WITH_LOCK(_locked_shrinker) {
-                auto it = _cache.find(str_key);
-
-                // If it's a new key - add it to the lru
-                if (it == _cache.end()) {
-                    lru_entry* entry = new lru_entry(str_key);
-                    _cache_lru.push_front(*entry);
-
-                    _cache[str_key] =   { _cache_lru.begin(),
-                                          str_val,
-                                          (u32)flags,
-                                          (time_t)exptime
-                                        };
-
-                    entry->mem_size = memory_needed;
-
-                    #if 0
-                    if (bucket_count !=  _cache.bucket_count()) {
-                        bucket_count =  _cache.bucket_count();
-                        printf("bucket number is %d\n", bucket_count);
-                    }
-                    #endif
-
-                } else {
-                    _cached_data_size -= it->second.lru_link->mem_size;
-
-                    it->second.lru_link->mem_size = memory_needed;
-
-                    // Update the cache value
-                    it->second.data = str_val;
-                    it->second.flags = (u32)flags;
-                    it->second.exptime = (time_t)exptime;
-
-                    // Move the key to the front of the LRU
-                    move_to_lru_front(it, true);
-                }
-            }
-
-            _cached_data_size += memory_needed;
-
-            //std::cerr<<"got set with " << bytes << " bytes\n";
-            return hdr_len + send_cmd_stored(packet);
-        }
+    if (cmd_len == len) {
+        return _hdr_len + send_cmd_error(packet);
     }
 
-    std::cerr<<"Error... Got "<<packet<<"\n";
+    //
+    // Parse the command: we use a hash table for translation.
+    // The "language" is too simple to justify a real parser.
+    //
+    const string cmd_str(packet, cmd_len);
+    auto cmd_it = cmd_hash.find(cmd_str);
+    if (cmd_it == cmd_hash.end()) {
+        cerr<<"Got unknown command: "<<cmd_str.c_str()<<endl;
+        return _hdr_len + send_cmd_error(packet);
+    }
+    return handle_command(cmd_it->second, packet, len);
+}
 
-    return hdr_len + send_cmd_error(packet);
+inline int memcached::handle_command(commands cmd, char* p, u16 l)
+{
+    switch (cmd) {
+    case GET:
+        return do_get(p, l);
+    case SET:
+        return do_set(p, l);
+    default:
+        assert(0);
+    }
 }
 
 void memcached::reverse_direction(mbuf* m, ether_header* ether_hdr, ip* ip_hdr,
