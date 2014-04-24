@@ -228,7 +228,8 @@ inline int memcached::handle_command(commands cmd, char* p, u16 l)
     case SET:
         return do_set(p, l);
     default:
-        assert(0);
+        cerr<<"Command "<<cmd<<" is not implemented yet"<<endl;
+        return _hdr_len + send_cmd_error(p);
     }
 }
 
