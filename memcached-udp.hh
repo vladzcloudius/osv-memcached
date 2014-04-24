@@ -150,7 +150,7 @@ private:
 
         memcpy(packet, msg, sizeof(msg) - 1);
 
-        return sizeof(msg) - 1;
+        return _hdr_len + sizeof(msg) - 1;
     }
 
     int send_cmd_stored(char* packet) {
@@ -158,7 +158,7 @@ private:
 
         memcpy(packet, msg, sizeof(msg) - 1);
 
-        return sizeof(msg) - 1;
+        return _hdr_len + sizeof(msg) - 1;
     }
 
     int send_cmd_end(char* packet) {
@@ -166,7 +166,7 @@ private:
 
         memcpy(packet, msg, sizeof(msg) - 1);
 
-        return sizeof(msg) - 1;
+        return _hdr_len + sizeof(msg) - 1;
     }
 
     bool memcached_header_invalid(memcached_header* hdr)

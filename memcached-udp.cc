@@ -63,8 +63,7 @@ inline int memcached::do_get(char* packet, u16 len)
     //cerr<<"got 'get'\n";
     u16 flen = get_field_len(packet + 4, len - 4);
     if (flen == len - 4) {
-        // TODO: consider using exceptions for handling error cases.
-        return _hdr_len + send_cmd_error(packet);
+        return send_cmd_error(packet);
     }
 
     char* reply = packet;
@@ -75,7 +74,7 @@ inline int memcached::do_get(char* packet, u16 len)
         auto it = _cache.find(str_key);
 
         if (it == _cache.end()) {
-            return _hdr_len + send_cmd_end(packet);
+            return send_cmd_end(packet);
         }
 
         //cerr << "found\n";
@@ -114,13 +113,13 @@ inline int memcached::do_set(char* packet, u16 len)
     end &= 0xffffffff;
 
     if (z != 4) {
-        return _hdr_len + send_cmd_error(packet);
+        return send_cmd_error(packet);
     }
     // TODO: check if there is "noreply" at 'end'
     if (len < 4 + end + 2 + bytes) {
         cerr << "got too small packet ?! len="<<len<<", end="
             <<end<<", bytes="<<bytes<<"\n";
-        return _hdr_len + send_cmd_error(packet);
+        return send_cmd_error(packet);
     }
 
     string str_key(key);
@@ -169,7 +168,7 @@ inline int memcached::do_set(char* packet, u16 len)
     _cached_data_size += memory_needed;
 
     //cerr<<"got set with " << bytes << " bytes\n";
-    return _hdr_len + send_cmd_stored(packet);
+    return send_cmd_stored(packet);
 }
 
 
@@ -202,7 +201,7 @@ int memcached::process_request(char* packet, u16 len)
     u16 cmd_len = get_field_len(packet, len);
 
     if (cmd_len == len) {
-        return _hdr_len + send_cmd_error(packet);
+        return send_cmd_error(packet);
     }
 
     //
@@ -212,7 +211,7 @@ int memcached::process_request(char* packet, u16 len)
     auto cmd_it = cmd_hash.find(string(packet, cmd_len));
     if (cmd_it == cmd_hash.end()) {
         cerr<<"Got unknown command: "<<string(packet, cmd_len).c_str()<<endl;
-        return _hdr_len + send_cmd_error(packet);
+        return send_cmd_error(packet);
     }
     return handle_command(cmd_it->second, packet, len);
 }
@@ -226,7 +225,7 @@ inline int memcached::handle_command(commands cmd, char* p, u16 l)
         return do_set(p, l);
     default:
         cerr<<"Command "<<cmd<<" is not implemented yet"<<endl;
-        return _hdr_len + send_cmd_error(p);
+        return send_cmd_error(p);
     }
 }
 
