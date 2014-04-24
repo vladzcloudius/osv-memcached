@@ -209,10 +209,9 @@ int memcached::process_request(char* packet, u16 len)
     // Parse the command: we use a hash table for translation.
     // The "language" is too simple to justify a real parser.
     //
-    const string cmd_str(packet, cmd_len);
-    auto cmd_it = cmd_hash.find(cmd_str);
+    auto cmd_it = cmd_hash.find(string(packet, cmd_len));
     if (cmd_it == cmd_hash.end()) {
-        cerr<<"Got unknown command: "<<cmd_str.c_str()<<endl;
+        cerr<<"Got unknown command: "<<string(packet, cmd_len).c_str()<<endl;
         return _hdr_len + send_cmd_error(packet);
     }
     return handle_command(cmd_it->second, packet, len);
