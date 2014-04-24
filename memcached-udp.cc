@@ -19,6 +19,7 @@
 #include <bsd/sys/netinet/udp_var.h>
 
 #include <machine/in_cksum.h>
+#include <cstdio>
 
 using namespace std;
 
@@ -60,18 +61,15 @@ inline u16 memcached::get_field_len(char* const start, const u16 max_len) const
 inline int memcached::do_get(char* packet, u16 len)
 {
     //cerr<<"got 'get'\n";
-    char key[251];
-    // TODO: do this in a loop to support multiple keys on one command
-    auto z = sscanf(packet + 4, "%250s", &key);
-    if (z != 1) {
+    u16 flen = get_field_len(packet + 4, len - 4);
+    if (flen == len - 4) {
+        // TODO: consider using exceptions for handling error cases.
         return _hdr_len + send_cmd_error(packet);
     }
-    // TODO: do we need to copy the string just for find???
-    // Need to be able to search without copy... HOW?
 
     char* reply = packet;
     char *r = reply + 6;
-    string str_key(key);
+    const string str_key(packet + 4, flen);
 
     WITH_LOCK(_locked_shrinker) {
         auto it = _cache.find(str_key);
@@ -81,19 +79,19 @@ inline int memcached::do_get(char* packet, u16 len)
         }
 
         //cerr << "found\n";
-        strcpy(reply, "VALUE ");
+        memcpy(reply, "VALUE ", 6);
 
-        strcpy(r, str_key.c_str());
+        memcpy(r, str_key.data(), str_key.size());
         r += str_key.size();
 
-        int data_len = it->second.data.length();
-        r += sprintf(r, " %ld %d\r\n", it->second.flags, data_len);
+        int data_len = it->second.data.size();
+        r += std::sprintf(r, " %ld %d\r\n", it->second.flags, data_len);
 
         // Value
-        memcpy(r, it->second.data.c_str(), data_len);
+        memcpy(r, it->second.data.data(), data_len);
         r += data_len;
 
-        strcpy(r, "\r\nEND\r\n");
+        memcpy(r, "\r\nEND\r\n", 7);
         r += 7;
 
         // Move the key to the front of the LRU
