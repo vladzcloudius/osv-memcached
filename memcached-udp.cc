@@ -61,14 +61,13 @@ inline u16 memcached::get_field_len(char* const start, const u16 max_len) const
 inline int memcached::do_get(char* packet, u16 len)
 {
     //cerr<<"got 'get'\n";
-    u16 flen = get_field_len(packet + 4, len - 4);
-    if (flen == len - 4) {
+    string str_key;
+    if (!parse_key(packet + 4, len - 4, str_key)) {
         return send_cmd_error(packet);
     }
 
     char* reply = packet;
     char *r = reply + 6;
-    const string str_key(packet + 4, flen);
 
     WITH_LOCK(_locked_shrinker) {
         auto it = _cache.find(str_key);
@@ -94,54 +93,141 @@ inline int memcached::do_get(char* packet, u16 len)
         r += 7;
 
         // Move the key to the front of the LRU
-        move_to_lru_front(it);
+        move_to_lru_front(it->second);
     }
 
     return _hdr_len + (r - reply);
 }
 
+inline bool memcached::parse_key(char* p, u16 l, string& key)
+{
+    // Parse a "key"
+    u16 flen = get_field_len(p, l);
+    if (flen == l) {
+        cerr<<"Bad packet format"<<endl;
+        return false;
+    }
+
+    key.assign(p, flen);
+    return true;
+}
+
+//
+// Format of a command is as follows:
+// <command name> <key> <flags> <exptime> <bytes> [noreply]\r\n
+// <data>\r\n
+//
+
+/**
+ * This function parsed the storage commands starting from the "flags" field
+ * @param cmd
+ * @param packet
+ * @param len
+ * @param cache_elem
+ *
+ * @return
+ */
+bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
+                                  memcache_value& cache_elem)
+{
+    unsigned long flags, exptime, bytes;
+    char *p = packet, *end;
+
+    // Parse flags
+    flags = strtoul(p, &end, 10);
+    if (errno) {
+        cerr<<"Bad format in flags"<<endl;
+        errno = 0;
+        return false;
+    }
+
+    p = end;
+
+    // Parse exptime
+    exptime = strtoul(p, &end, 10);
+    if (errno) {
+        cerr<<"Bad format in exptime"<<endl;
+        errno = 0;
+        return false;
+    }
+
+    p = end;
+
+    // Parse bytes number
+    bytes = strtoul(p, &end, 10);
+    if (errno) {
+        cerr<<"Bad format in bytes (number)"<<endl;
+        errno = 0;
+        return false;
+    }
+
+    p = end;
+
+    if (*p != '\r') {
+        // TODO: add [noreply] handling here
+        assert(0);
+    } else {
+        p += 2;
+    }
+
+    // Sanity check
+    if (len < (p - packet) + bytes + 2) {
+        cerr << "got a too small packet ?! len="<<len
+             <<", bytes="<<bytes<<"\n";
+        return false;
+    }
+
+    // Update the cache entry
+    cache_elem.exptime = exptime;
+    cache_elem.flags = flags;
+
+    switch (cmd) {
+    case SET:
+        cache_elem.data.assign(p, bytes);
+        break;
+    default:
+        // Not supported command
+        assert(0);
+    }
+
+    return true;
+}
+
 inline int memcached::do_set(char* packet, u16 len)
 {
     //cerr<<"got 'set'\n";
-    unsigned long flags, exptime, bytes;
-    size_t end;
-    char key[251];
-    auto z =
-      sscanf(packet+4, "%250s %ld %ld %ld%n",
-                       &key, &flags, &exptime, &bytes, &end);
+    char* p = packet + 4;
+    u16 cur_len = len - 4;
 
-    end &= 0xffffffff;
-
-    if (z != 4) {
-        return send_cmd_error(packet);
-    }
-    // TODO: check if there is "noreply" at 'end'
-    if (len < 4 + end + 2 + bytes) {
-        cerr << "got too small packet ?! len="<<len<<", end="
-            <<end<<", bytes="<<bytes<<"\n";
+    // Parse a "key"
+    string str_key;
+    if (!parse_key(p, cur_len, str_key)) {
         return send_cmd_error(packet);
     }
 
-    string str_key(key);
-    string str_val(packet + 4 + end + 2, bytes);
-
-    size_t memory_needed = entry_mem_footprint(bytes, str_key.size());
+    p += str_key.size() + 1;
+    cur_len -= str_key.size() + 1;
+    size_t memory_needed;
 
     WITH_LOCK(_locked_shrinker) {
-        auto it = _cache.find(str_key);
+        memcache_value& cache_entry = _cache[str_key];
 
-        // If it's a new key - add it to the lru
-        if (it == _cache.end()) {
+        if (!parse_storage_cmd(SET, p, cur_len, cache_entry)) {
+            return send_cmd_error(packet);
+        }
+
+        memory_needed = entry_mem_footprint(cache_entry.data.size(),
+                                            str_key.size());
+
+        if (!cache_entry.initialized) {
+            // Create a new LRU entry
             lru_entry* entry = new lru_entry(str_key);
-            _cache_lru.push_front(*entry);
-
-            _cache[str_key] =   { _cache_lru.begin(),
-                                  str_val,
-                                  (u32)flags,
-                                  (time_t)exptime
-                                };
-
             entry->mem_size = memory_needed;
+
+            _cache_lru.push_front(*entry);
+            cache_entry.lru_link = _cache_lru.begin();
+
+            cache_entry.initialized = true;
 
             #if 0
             if (bucket_count !=  _cache.bucket_count()) {
@@ -149,19 +235,12 @@ inline int memcached::do_set(char* packet, u16 len)
                 printf("bucket number is %d\n", bucket_count);
             }
             #endif
-
         } else {
-            _cached_data_size -= it->second.lru_link->mem_size;
-
-            it->second.lru_link->mem_size = memory_needed;
-
-            // Update the cache value
-            it->second.data = str_val;
-            it->second.flags = (u32)flags;
-            it->second.exptime = (time_t)exptime;
+            _cached_data_size -= cache_entry.lru_link->mem_size;
+            cache_entry.lru_link->mem_size = memory_needed;
 
             // Move the key to the front of the LRU
-            move_to_lru_front(it, true);
+            move_to_lru_front(cache_entry, true);
         }
     }
 
@@ -381,9 +460,9 @@ size_t memcached::shrink_cache_locked(size_t n)
     return released_amount;
 }
 
-void memcached::move_to_lru_front(cache_iterator& it, bool force)
+void memcached::move_to_lru_front(memcache_value& cache_entry, bool force)
 {
-    auto link_ptr = &it->second.lru_link;
+    auto link_ptr = &cache_entry.lru_link;
     auto entry_ptr = &(*(*link_ptr));
 
     //  Move the key to the front if it's not already there

@@ -30,7 +30,6 @@
 
 #include <iostream>
 #include <unordered_map>
-#include <vector>
 
 #include <boost/intrusive/list.hpp>
 
@@ -53,13 +52,16 @@ public:
         oc::uptime::time_point   time;
         size_t                   mem_size;
 
-        lru_entry(std::string& k) : key(k), time(oc::uptime::now()), mem_size(0) {}
+        lru_entry(std::string& k) : key(k), time(oc::uptime::now()), mem_size(0)
+        {}
     };
 
     typedef bi::list<lru_entry>                                lru_type;
     typedef lru_type::iterator                                 lru_iterator;
 
     struct memcache_value {
+        memcache_value() : initialized(false) {}
+
         lru_iterator lru_link;
         std::string  data;
         //
@@ -68,6 +70,8 @@ public:
         //
         u32          flags;
         time_t       exptime;
+
+        bool initialized;
     };
 
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
@@ -182,7 +186,7 @@ private:
      */
     size_t shrink_cache_locked(size_t n);
 
-    void move_to_lru_front(cache_iterator& it, bool force = false);
+    void move_to_lru_front(memcache_value& cache_entry, bool force = false);
 
     void dump_mbuf(mbuf* m)
     {
@@ -240,6 +244,9 @@ private:
     int do_get(char* packet, u16 len);
     int do_set(char* packet, u16 len);
     int handle_command(commands cmd, char* packet, u16 len);
+    bool parse_storage_cmd(commands cmd, char* packet, u16 len,
+                           memcache_value& cache_elem);
+    bool parse_key(char* p, u16 l, std::string& key);
 
 private:
     const u16 _htons_1;
