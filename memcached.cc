@@ -18,8 +18,12 @@ static inline int memcached_pf_hook(
     osv_apps::memcached* memcached = static_cast<osv_apps::memcached*>(argv);
 
     //printf("Called hook for mbuf %p dir %d\n", *m, dir);
-    bool res = memcached->filter(ifn, *m);
-    return (!res) ? 0 : 1;
+    if (memcached->filter(ifn, *m)) {
+        m = nullptr;
+        return 1;
+    } else {
+        return 0;
+    }
 }
 
 int main(int argc, char* argv[])

@@ -135,7 +135,7 @@ private:
      * @param packet Pointer to the memcache data
      * @param len    Size of the memcache data
      */
-    int process_request(char* packet, u16 len);
+    int process_request(char* packet, u16 len, bool& noreply);
 
     /**
      * Prepare the packet to be sent back: reverse the addressing
@@ -242,10 +242,10 @@ private:
 
     // Command handlers
     int do_get(char* packet, u16 len);
-    int do_set(char* packet, u16 len);
-    int handle_command(commands cmd, char* packet, u16 len);
+    int do_set(char* packet, u16 len, bool& noreply);
+    int handle_command(commands cmd, char* packet, u16 len, bool& noreply);
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
-                           memcache_value& cache_elem);
+                           memcache_value& cache_elem, bool& noreply);
     bool parse_key(char* p, u16 l, std::string& key);
 
 private:

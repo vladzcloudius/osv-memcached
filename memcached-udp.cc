@@ -128,7 +128,7 @@ inline bool memcached::parse_key(char* p, u16 l, string& key)
  * @return
  */
 bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
-                                  memcache_value& cache_elem)
+                                  memcache_value& cache_elem, bool& noreply)
 {
     unsigned long flags, exptime, bytes;
     char *p = packet, *end;
@@ -163,14 +163,20 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
 
     p = end;
 
+    // Handle "noreply"
     if (*p != '\r') {
-        // TODO: add [noreply] handling here
-        assert(0);
+        if (strncmp(p + 1, "noreply", 7)) {
+            cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
+            return false;
+        }
+
+        noreply = true;
+        p += 10;
     } else {
+        noreply = false;
         p += 2;
     }
 
-    // Sanity check
     if (len < (p - packet) + bytes + 2) {
         cerr << "got a too small packet ?! len="<<len
              <<", bytes="<<bytes<<"\n";
@@ -193,7 +199,7 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
     return true;
 }
 
-inline int memcached::do_set(char* packet, u16 len)
+inline int memcached::do_set(char* packet, u16 len, bool& noreply)
 {
     //cerr<<"got 'set'\n";
     char* p = packet + 4;
@@ -212,7 +218,8 @@ inline int memcached::do_set(char* packet, u16 len)
     WITH_LOCK(_locked_shrinker) {
         memcache_value& cache_entry = _cache[str_key];
 
-        if (!parse_storage_cmd(SET, p, cur_len, cache_entry)) {
+        if (!parse_storage_cmd(SET, p, cur_len, cache_entry, noreply)) {
+            noreply = false;
             return send_cmd_error(packet);
         }
 
@@ -236,7 +243,7 @@ inline int memcached::do_set(char* packet, u16 len)
             }
             #endif
         } else {
-            _cached_data_size -= cache_entry.lru_link->mem_size;
+             _cached_data_size -= cache_entry.lru_link->mem_size;
             cache_entry.lru_link->mem_size = memory_needed;
 
             // Move the key to the front of the LRU
@@ -247,7 +254,11 @@ inline int memcached::do_set(char* packet, u16 len)
     _cached_data_size += memory_needed;
 
     //cerr<<"got set with " << bytes << " bytes\n";
-    return send_cmd_stored(packet);
+    if (!noreply) {
+        return send_cmd_stored(packet);
+    } else {
+        return 0;
+    }
 }
 
 
@@ -261,7 +272,7 @@ inline int memcached::do_set(char* packet, u16 len)
  * @param packet Pointer to the memcache data
  * @param len    Size of the memcache data
  */
-int memcached::process_request(char* packet, u16 len)
+int memcached::process_request(char* packet, u16 len, bool& noreply)
 {
     memcached_header* header = reinterpret_cast<memcached_header*>(packet);
 
@@ -292,16 +303,17 @@ int memcached::process_request(char* packet, u16 len)
         cerr<<"Got unknown command: "<<string(packet, cmd_len).c_str()<<endl;
         return send_cmd_error(packet);
     }
-    return handle_command(cmd_it->second, packet, len);
+    return handle_command(cmd_it->second, packet, len, noreply);
 }
 
-inline int memcached::handle_command(commands cmd, char* p, u16 l)
+inline int memcached::handle_command(commands cmd, char* p, u16 l,
+                                     bool& noreply)
 {
     switch (cmd) {
     case GET:
         return do_get(p, l);
     case SET:
-        return do_set(p, l);
+        return do_set(p, l, noreply);
     default:
         cerr<<"Command "<<cmd<<" is not implemented yet"<<endl;
         return send_cmd_error(p);
@@ -383,14 +395,21 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
 
     h += ip_size;
     struct udphdr* udp_hdr = reinterpret_cast<udphdr*>(h);
+    bool noreply = false;
 
     int data_len = process_request(h + sizeof(udphdr),
-                              ntohs(ip_hdr->ip_len) - ip_size - sizeof(udphdr));
+                              ntohs(ip_hdr->ip_len) - ip_size - sizeof(udphdr),
+                                   noreply);
 
     if (data_len < 0) {
         return false;
     }
 
+    // If "noreply" received then we are done here
+    if (noreply) {
+        m_freem(m);
+        return true;
+    }
     // Set new mbuf len
     m->M_dat.MH.MH_pkthdr.len = m->m_hdr.mh_len =
         ip_size + sizeof(udphdr) + data_len;
