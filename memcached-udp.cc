@@ -249,9 +249,10 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
             // Move the key to the front of the LRU
             move_to_lru_front(cache_entry, true);
         }
+
+        _cached_data_size += memory_needed;
     }
 
-    _cached_data_size += memory_needed;
 
     //cerr<<"got set with " << bytes << " bytes\n";
     if (!noreply) {
