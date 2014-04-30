@@ -270,6 +270,7 @@ private:
     // when a few entries are frequently accessed.
     //
     static const long long lru_update_interval = 60 * 1000000000LL;// 60 seconds
+    static const u16 memcached_port_num = 11211;
 };
 
 }

@@ -396,6 +396,12 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
 
     h += ip_size;
     struct udphdr* udp_hdr = reinterpret_cast<udphdr*>(h);
+
+    // Check that the port is a memcached port
+    if (ntohs(udp_hdr->uh_dport) != memcached_port_num) {
+        return false;
+    }
+
     bool noreply = false;
 
     int data_len = process_request(h + sizeof(udphdr),
