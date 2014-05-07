@@ -32,6 +32,7 @@
 #include <unordered_map>
 
 #include <boost/intrusive/list.hpp>
+#include <boost/intrusive/set.hpp>
 
 #include <locked_shrinker.hh>
 
@@ -47,31 +48,87 @@ public:
     //
     typedef std::string memcache_key;
 
-    struct lru_entry : public boost::intrusive::list_base_hook<> {
+    //////////////// EXPIRED and LRU //////////
+    struct time_tracking_entry {
+        // seconds since epoch  
+        unsigned long            exptime;
         memcache_key             key;
-        oc::uptime::time_point   time;
+        // Time point when the entry has been updated/moved for the last time
+        oc::uptime::time_point   last_touch_time;
         size_t                   mem_size;
 
-        lru_entry(std::string& k) : key(k), time(oc::uptime::now()), mem_size(0)
-        {}
+        time_tracking_entry(std::string& k) :
+            key(k), last_touch_time(oc::uptime::now()), mem_size(0) {}
+
+        // hook for a heap by "expired" field
+        bi::set_member_hook<>    exp_set_hook;
+
+        //
+        // hook for a list of new entries that hasn't been added to the heap by
+        // "expired" field. They will be moved from this list to the heap during
+        // the "shrinking".
+        //
+        bi::list_member_hook<>   exp_list_hook;
+
+        // hook for an LRU list
+        bi::list_member_hook<>   lru_list_hook;
+
+        friend bool operator<(const time_tracking_entry& a,
+                              const time_tracking_entry& b)
+        {
+            return a.exptime < b.exptime;
+        }
+
+        friend bool operator==(const time_tracking_entry& a,
+                              const time_tracking_entry& b)
+        {
+            return a.exptime == b.exptime;
+        }
+
+        friend bool operator>(const time_tracking_entry& a,
+                              const time_tracking_entry& b)
+        {
+            return a.exptime > b.exptime;
+        }
     };
 
-    typedef bi::list<lru_entry>                                lru_type;
-    typedef lru_type::iterator                                 lru_iterator;
+    typedef bi::member_hook<time_tracking_entry,
+                            bi::set_member_hook<>,
+                            &time_tracking_entry::exp_set_hook>
+                                                        exp_set_member_option;
+	typedef bi::member_hook<time_tracking_entry,
+                            bi::list_member_hook<>,
+                            &time_tracking_entry::exp_list_hook>
+                                                        exp_list_member_option;
+    typedef bi::member_hook<time_tracking_entry,
+                            bi::list_member_hook<>,
+                            &time_tracking_entry::lru_list_hook>
+                                                        lru_list_member_option;
 
+    typedef bi::multiset<time_tracking_entry, exp_set_member_option> exp_set_type;
+    typedef bi::list<time_tracking_entry, exp_list_member_option>    exp_list_type;
+    typedef bi::list<time_tracking_entry, lru_list_member_option>    lru_type;
+
+    typedef exp_set_type::iterator                            exp_set_iterator;
+    typedef exp_list_type::iterator                           exp_list_iterator;
+    typedef lru_type::iterator                                lru_iterator;
+
+    //////////////// CACHE ////////////
     struct memcache_value {
         memcache_value() : initialized(false) {}
 
-        lru_iterator lru_link;
-        std::string  data;
+        lru_iterator  lru_link;
+        exp_set_iterator exp_set_link;
+        exp_list_iterator exp_list_link;
+        std::string   data;
         //
         // "flags" is an opaque 32-bit integer which the clients gives in the
         // "set" command, and is echoed back on "get" commands.
         //
-        u32          flags;
-        time_t       exptime;
+        u32           flags;
+        unsigned long exptime;
 
-        bool initialized;
+        bool          initialized;
     };
 
     typedef std::unordered_map<memcache_key, memcache_value> cache_type;
@@ -127,7 +184,10 @@ private:
     //The disposer object function
     struct delete_disposer
     {
-        void operator()(lru_entry* delete_this) { delete delete_this; }
+        void operator()(time_tracking_entry* delete_this)
+        {
+            delete delete_this;
+        }
     };
 
     /**
@@ -219,7 +279,7 @@ private:
         size_t size = 0;
 
         // LRU entry
-        size += (0x1UL << ilog2_roundup(sizeof(lru_entry)));
+        size += (0x1UL << ilog2_roundup(sizeof(time_tracking_entry)));
         size += (0x1UL << ilog2_roundup(sizeof(std::string) + key_bytes));
 
         // Cache entry
@@ -247,6 +307,9 @@ private:
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
                            memcache_value& cache_elem, bool& noreply);
     bool parse_key(char* p, u16 l, std::string& key);
+    bool convert2epoch(unsigned long exptime, unsigned long& t) const;
+    unsigned long get_secs_since_epoch() const;
+    void delete_cache_entry(cache_iterator& it);
 
 private:
     const u16 _htons_1;
@@ -258,7 +321,17 @@ private:
     //
     // LRU keys list: the most rececently used at the front.
     //
-    lru_type _cache_lru;
+    lru_type      _cache_lru;
+
+    //
+    // heap and list for handling the expiration field.
+    // - When a new cache value is created and it has an expiration time then
+    //   it's added to the _exp_list to make it quick.
+    // - Then when a "shrinker" callback is called all non-expired entries are
+    //   moved from the _exp_list to _exp_set to enable quick evicting.
+    //
+    exp_set_type  _exp_set;
+    exp_list_type _exp_list;
 
     std::unordered_map<std::string, commands> cmd_hash;
 
@@ -269,8 +342,15 @@ private:
     // Original memcached uses the same heuristics in order to reduce the noice
     // when a few entries are frequently accessed.
     //
-    static const long long lru_update_interval = 60 * 1000000000LL;// 60 seconds
-    static const u16 memcached_port_num = 11211;
+    static const int lru_update_interval = 60; // 60 seconds
+    static const u16 memcached_port_num  = 11211;
+
+    //
+    // if "exptime" is less or equal this value (30 days) than it's a number of
+    // seconds since "now", otherwise it's number of seconds since the "Unix
+    // epoch" (midnight, Jan 1st, 1970).
+    //
+    static const unsigned long max_expiration_since_now = 60UL*60*24*30;
 };
 
 }

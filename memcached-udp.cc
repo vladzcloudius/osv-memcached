@@ -76,6 +76,13 @@ inline int memcached::do_get(char* packet, u16 len)
             return send_cmd_end(packet);
         }
 
+        // Check the expiration time. If entry has expired - delete it.
+        unsigned long exptime = it->second.exptime;
+        if (exptime && (exptime < get_secs_since_epoch())) {
+            delete_cache_entry(it);
+            return send_cmd_end(packet);
+        }
+
         //cerr << "found\n";
         memcpy(reply, "VALUE ", 6);
 
@@ -110,6 +117,39 @@ inline bool memcached::parse_key(char* p, u16 l, string& key)
 
     key.assign(p, flen);
     return true;
+}
+
+inline unsigned long memcached::get_secs_since_epoch() const
+{
+    auto wall_time = osv::clock::wall::now();
+    auto dur = wall_time.time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::seconds>(dur).count();
+}
+
+inline bool memcached::convert2epoch(unsigned long exptime,
+                                     unsigned long& t) const
+{
+    unsigned long secs = get_secs_since_epoch();
+
+    t = exptime;
+
+    //printf("exptime %ld\n", exptime);
+
+    if (exptime == 0) {
+        // never expire
+        return true;
+    } else if (exptime > max_expiration_since_now) {
+        // It's a global time (since epoch)
+        if (exptime < secs) {
+            return false;
+        }
+
+        return true;
+    } else { // exptime <= max_expiration_since_now
+        // It's a relative to "now" time
+        t += secs;
+        return true;
+    }
 }
 
 //
@@ -153,6 +193,12 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
 
     p = end;
 
+    unsigned long aligned_exptime;
+    if (!convert2epoch(exptime, aligned_exptime)) {
+        cerr<<"Expiration time is in the past: "<<exptime<<endl;
+        return false;
+    }
+
     // Parse bytes number
     bytes = strtoul(p, &end, 10);
     if (errno) {
@@ -184,7 +230,7 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
     }
 
     // Update the cache entry
-    cache_elem.exptime = exptime;
+    cache_elem.exptime = aligned_exptime;
     cache_elem.flags = flags;
 
     switch (cmd) {
@@ -228,11 +274,23 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
 
         if (!cache_entry.initialized) {
             // Create a new LRU entry
-            lru_entry* entry = new lru_entry(str_key);
+            time_tracking_entry* entry = new time_tracking_entry(str_key);
             entry->mem_size = memory_needed;
 
+            // Update the LRU list
             _cache_lru.push_front(*entry);
             cache_entry.lru_link = _cache_lru.begin();
+
+            // Update the "expired" list and set links, set the expiration time
+            cache_entry.exp_set_link  = _exp_set.end();
+            entry->exptime = cache_entry.exptime;
+
+            if (!cache_entry.exptime) {
+                cache_entry.exp_list_link = _exp_list.end();
+            } else {
+                _exp_list.push_front(*entry);
+                cache_entry.exp_list_link = _exp_list.begin();
+            }
 
             cache_entry.initialized = true;
 
@@ -455,29 +513,72 @@ bool memcached::filter(struct ifnet* ifn, mbuf* m)
 
 size_t memcached::shrink_cache_locked(size_t n)
 {
-    auto it = _cache_lru.end();
     size_t water_mark = (_cached_data_size / 10) * 9;
     size_t to_release = _cached_data_size - water_mark;
     size_t released_amount = 0;
+    unsigned long secs_since_epoch = get_secs_since_epoch();
 
     to_release = MAX(to_release, n);
     to_release = MIN(to_release, _cached_data_size);
 
-    // Delete from the cache
-    for (--it; released_amount < to_release; --it) {
-        auto c_it = _cache.find(it->key);
+    //
+    // First delete those that have expired.
+    //
+    // Start with moving the items from _exp_list to _exp_set
+    //
+    for (exp_list_iterator c = _exp_list.begin(); c != _exp_list.end();) {
+        cache_iterator c_it = _cache.find(c->key);
+
+        DEBUG_ASSERT(c_it != _cache.end(),
+                     "Haven't found a cache entry for key [%s] "
+                     "from the EXP list\n",
+                     c->key.c_str());
+
+        // If entry has already expired delete it
+        if (c->exptime < secs_since_epoch) {
+            released_amount += c->mem_size;
+            ++c;
+            delete_cache_entry(c_it);
+        } else {
+            exp_set_iterator s_it = _exp_set.insert(*c);
+            exp_list_iterator old_c = c++;
+            _exp_list.erase(old_c);
+
+            c_it->second.exp_list_link = _exp_list.end();
+            c_it->second.exp_set_link = s_it;
+        }
+    }
+
+    // Then iterate over _exp_set and delete all expired entries
+    for (exp_set_iterator c = _exp_set.begin();
+         (c != _exp_set.end()) && (c->exptime < secs_since_epoch);) {
+        cache_iterator c_it = _cache.find(c->key);
+
+        DEBUG_ASSERT(c_it != _cache.end(),
+                    "Haven't found a cache entry for key [%s] "
+                    "from the EXP set\n",
+                    c->key.c_str());
+
+        released_amount += c->mem_size;
+        ++c;
+        delete_cache_entry(c_it);
+    }
+
+    lru_iterator it = _cache_lru.end();
+
+    // Delete the rest of the entries starting from the least recently used ones
+    for (--it; released_amount < to_release;) {
+        cache_iterator c_it = _cache.find(it->key);
+
         DEBUG_ASSERT(c_it != _cache.end(),
                      "Haven't found a cache entry for key [%s] "
                      "from the LRU list\n",
                      it->key.c_str());
 
         released_amount += it->mem_size;
-        _cache.erase(c_it);
+        --it;
+        delete_cache_entry(c_it);
     }
-
-    // Delete from the LRU list
-    _cache_lru.erase_and_dispose(++it, _cache_lru.end(),
-                                 delete_disposer());
 
     _cached_data_size -= released_amount;
 
@@ -486,24 +587,42 @@ size_t memcached::shrink_cache_locked(size_t n)
     return released_amount;
 }
 
-void memcached::move_to_lru_front(memcache_value& cache_entry, bool force)
+inline void memcached::move_to_lru_front(memcache_value& cache_entry,
+                                         bool force)
 {
     auto link_ptr = &cache_entry.lru_link;
     auto entry_ptr = &(*(*link_ptr));
 
+    using namespace std::chrono;
+
     //  Move the key to the front if it's not already there
     if (*link_ptr != _cache_lru.begin()) {
         auto now = oc::uptime::now();
+        auto secs = duration_cast<seconds>(now -
+                                           entry_ptr->last_touch_time).count();
 
-        if (force || ((now - entry_ptr->time).count() >
-                                                     lru_update_interval)) {
+        if (force || (secs > lru_update_interval)) {
 
             _cache_lru.erase(*link_ptr);
             _cache_lru.push_front(*entry_ptr);
             *link_ptr = _cache_lru.begin();
-            entry_ptr->time = now;
+            entry_ptr->last_touch_time = now;
         }
     }
+}
+
+void inline memcached::delete_cache_entry(cache_iterator& it)
+{
+    if (it->second.exp_set_link != _exp_set.end()) {
+        _exp_set.erase(it->second.exp_set_link);
+    }
+
+    if (it->second.exp_list_link != _exp_list.end()) {
+        _exp_list.erase(it->second.exp_list_link);
+    }
+
+    _cache_lru.erase_and_dispose(it->second.lru_link, delete_disposer());
+    _cache.erase(it);
 }
 
 } // namespace osv_apps
