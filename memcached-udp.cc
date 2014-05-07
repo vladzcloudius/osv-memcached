@@ -129,8 +129,6 @@ inline unsigned long memcached::get_secs_since_epoch() const
 inline bool memcached::convert2epoch(unsigned long exptime,
                                      unsigned long& t) const
 {
-    unsigned long secs = get_secs_since_epoch();
-
     t = exptime;
 
     //printf("exptime %ld\n", exptime);
@@ -140,14 +138,14 @@ inline bool memcached::convert2epoch(unsigned long exptime,
         return true;
     } else if (exptime > max_expiration_since_now) {
         // It's a global time (since epoch)
-        if (exptime < secs) {
+        if (exptime < get_secs_since_epoch()) {
             return false;
         }
 
         return true;
     } else { // exptime <= max_expiration_since_now
         // It's a relative to "now" time
-        t += secs;
+        t += get_secs_since_epoch();
         return true;
     }
 }
