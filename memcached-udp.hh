@@ -307,6 +307,8 @@ private:
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
                            memcache_value& cache_elem, bool& noreply);
     bool parse_key(char* p, u16 l, std::string& key);
+    bool parse_noreply(char*& p, bool& noreply) const;
+
     bool convert2epoch(unsigned long exptime, unsigned long& t) const;
     unsigned long get_secs_since_epoch() const;
     void delete_cache_entry(cache_iterator& it);

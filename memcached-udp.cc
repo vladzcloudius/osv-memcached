@@ -150,6 +150,40 @@ inline bool memcached::convert2epoch(unsigned long exptime,
     }
 }
 
+/**
+ * Try to parse a "noreply" option.
+ *
+ * "noreply" option is an optional option that always comes right before "\r\n"
+ * sequence.
+ *
+ * @param p pointer to the symbol right after the last parsed token. The next
+ *          symbol should be either '\r' or a beginning of a "nereply" token.
+ *          The p will be updated to point to the next symbol after either
+ *          "noreply" token (if present) or after "\r\n" sequence.
+ * @param noreply true if there was a "noreply" token parsed and false
+ *                otherwise. The value is undefined if the packet is malformed.
+ *
+ * @return false if a packet is malformed and true otherwise.
+ */
+inline bool memcached::parse_noreply(char*& p, bool& noreply) const
+{
+    if (*p != '\r') {
+        if (strncmp(p + 1, "noreply", 7)) {
+            cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
+            return false;
+        }
+
+        noreply = true;
+        p += 10;
+        printf("Got noreply\n");
+    } else {
+        noreply = false;
+        p += 2;
+    }
+
+    return true;
+}
+
 //
 // Format of a command is as follows:
 // <command name> <key> <flags> <exptime> <bytes> [noreply]\r\n
@@ -208,17 +242,8 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
     p = end;
 
     // Handle "noreply"
-    if (*p != '\r') {
-        if (strncmp(p + 1, "noreply", 7)) {
-            cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
-            return false;
-        }
-
-        noreply = true;
-        p += 10;
-    } else {
-        noreply = false;
-        p += 2;
+    if (!parse_noreply(p, noreply)) {
+        return false;
     }
 
     if (len < (p - packet) + bytes + 2) {
