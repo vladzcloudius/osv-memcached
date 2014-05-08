@@ -175,7 +175,6 @@ inline bool memcached::parse_noreply(char*& p, bool& noreply) const
 
         noreply = true;
         p += 10;
-        printf("Got noreply\n");
     } else {
         noreply = false;
         p += 2;
