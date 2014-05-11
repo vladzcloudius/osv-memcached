@@ -494,6 +494,50 @@ bad_format_err:
     return send_cmd_error(p);
 }
 
+/**
+ * Handle the "delete" command.
+ *
+ * Command format:
+ *    delete <key>[ noreply]\r\n
+ * @param p
+ * @param l
+ * @param noreply
+ *
+ * @return
+ */
+int memcached::do_delete(char* p, u16 l, bool& noreply)
+{
+    char* cursor = p + 6;
+    u16 len = l - 6;
+
+    string str_key;
+    if (!parse_key(cursor, len, str_key)) {
+        return send_cmd_error(p);
+    }
+
+    if (!parse_noreply(cursor, len, noreply)) {
+        return send_cmd_error(p);
+    }
+
+    WITH_LOCK(_locked_shrinker) {
+        cache_iterator it = _cache.find(str_key);
+
+        if (it != _cache.end()) {
+            delete_cache_entry(it);
+
+            if (!noreply) {
+                return send_cmd_deleted(p);
+            }
+        } else {
+            if (!noreply) {
+                return send_cmd_not_found(p);
+            }
+        }
+    }
+
+    return 0;
+}
+
 inline int memcached::handle_command(commands cmd, char* p, u16 l,
                                      bool& noreply)
 {
@@ -504,6 +548,8 @@ inline int memcached::handle_command(commands cmd, char* p, u16 l,
         return do_set(p, l, noreply);
     case FLUSH:
         return do_flush_all(p, l, noreply);
+    case DELETE:
+        return do_delete(p, l, noreply);
     default:
         cerr<<"Command "<<cmd<<" is not implemented yet"<<endl;
         return send_cmd_error(p);

@@ -241,6 +241,22 @@ private:
         return _hdr_len + sizeof(msg) - 1;
     }
 
+    int send_cmd_deleted(char* packet) {
+        constexpr static char msg[] = "DELETED\r\n";
+
+        memcpy(packet, msg, sizeof(msg) - 1);
+
+        return _hdr_len + sizeof(msg) - 1;
+    }
+
+    int send_cmd_not_found(char* packet) {
+        constexpr static char msg[] = "NOT_FOUND\r\n";
+
+        memcpy(packet, msg, sizeof(msg) - 1);
+
+        return _hdr_len + sizeof(msg) - 1;
+    }
+
     /**
      * Currently memcache protocol doesn't support multi-frame requests - only
      * responces.
@@ -319,6 +335,7 @@ private:
     int do_get(char* packet, u16 len);
     int do_set(char* packet, u16 len, bool& noreply);
     int do_flush_all(char* p, u16 l, bool& noreply);
+    int do_delete(char* p, u16 l, bool& noreply);
 
     int handle_command(commands cmd, char* packet, u16 len, bool& noreply);
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
