@@ -60,8 +60,11 @@ inline u16 memcached::get_field_len(char* const start, const u16 max_len) const
 inline int memcached::do_get(char* packet, u16 len)
 {
     //cerr<<"got 'get'\n";
+    char* p = packet + 3;
+    u16 cur_len = len - 3;
+
     string str_key;
-    if (!parse_key(packet + 4, len - 4, str_key)) {
+    if (!parse_key(p, cur_len, str_key)) {
         return send_cmd_error(packet);
     }
 
@@ -105,8 +108,10 @@ inline int memcached::do_get(char* packet, u16 len)
     return _hdr_len + (r - reply);
 }
 
-inline bool memcached::parse_key(char* p, u16 l, string& key)
+inline bool memcached::parse_key(char*& p, u16& l, string& key)
 {
+    eat_spaces(p, l);
+
     // Parse a "key"
     u16 flen = get_field_len(p, l);
     if (flen == l) {
@@ -115,6 +120,9 @@ inline bool memcached::parse_key(char* p, u16 l, string& key)
     }
 
     key.assign(p, flen);
+    p += flen;
+    l -= flen;
+
     return true;
 }
 
@@ -164,29 +172,32 @@ inline bool memcached::convert2epoch(unsigned long exptime,
  *
  * @return false if a packet is malformed and true otherwise.
  */
-inline bool memcached::parse_noreply(char*& p, bool& noreply) const
+inline bool memcached::parse_noreply(char*& p, u16& l, bool& noreply) const
 {
-    if (p[0] != '\r') {
-        if (memcmp(p, "noreply", 7)) {
-            cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
-            return false;
-        }
+    eat_spaces(p, l);
+    if (!l) {
+        cerr<<"Bad packet format"<<endl;
+        return false;
+    }
 
-        if ((p[7] != '\r') || (p[8] != '\n')) {
-            cerr<<"Bad packet format: bad end of line format"<<endl;
+    if (p[0] != '\r') {
+        if ((l < 9) || memcmp(p, "noreply\r\n", 9)) {
+            cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
             return false;
         }
 
         noreply = true;
         p += 9;
+        l -= 9;
     } else {
-        if (p[1] != '\n') {
+        if ((l < 2) || (p[1] != '\n')) {
             cerr<<"Bad packet format: bad end of line format"<<endl;
             return false;
         }
 
         noreply = false;
         p += 2;
+        l -= 2;
     }
 
     return true;
@@ -251,14 +262,12 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
 
     len -= (p - packet);
 
-    eat_spaces(p, len);
-
     // Handle "noreply"
-    if (!parse_noreply(p, noreply)) {
+    if (!parse_noreply(p, len, noreply)) {
         return false;
     }
 
-    if (len < (p - packet) + bytes + 2) {
+    if (len < bytes) {
         cerr << "got a too small packet ?! len="<<len
              <<", bytes="<<bytes<<"\n";
         return false;
@@ -283,8 +292,8 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
 inline int memcached::do_set(char* packet, u16 len, bool& noreply)
 {
     //cerr<<"got 'set'\n";
-    char* p = packet + 4;
-    u16 cur_len = len - 4;
+    char* p = packet + 3;
+    u16 cur_len = len - 3;
 
     // Parse a "key"
     string str_key;
@@ -292,8 +301,6 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
         return send_cmd_error(packet);
     }
 
-    p += str_key.size() + 1;
-    cur_len -= str_key.size() + 1;
     size_t memory_needed;
 
     WITH_LOCK(_locked_shrinker) {
@@ -463,7 +470,7 @@ int memcached::do_flush_all(char* p, u16 l, bool& noreply)
     }
 
     // Handle "noreply"
-    if (!parse_noreply(cursor, noreply)) {
+    if (!parse_noreply(cursor, len, noreply)) {
         goto bad_format_err;
     }
 
