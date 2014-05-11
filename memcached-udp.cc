@@ -26,7 +26,6 @@ using namespace std;
 namespace osv_apps {
 
 memcached::memcached() :
-        _htons_1(ntohs(1)),
         _cached_data_size(0),
         _locked_shrinker(
             [this] (size_t n) { return this->shrink_cache_locked(n); })
@@ -35,7 +34,7 @@ memcached::memcached() :
     cmd_hash["get"]       = GET;
     cmd_hash["delete"]    = DELETE;
     cmd_hash["set"]       = SET;
-    cmd_hash["flush"]     = FLUSH;
+    cmd_hash["flush_all"] = FLUSH;
     cmd_hash["decr"]      = DECR;
     cmd_hash["incr"]      = INCR;
     cmd_hash["add"]       = ADD;
@@ -156,10 +155,10 @@ inline bool memcached::convert2epoch(unsigned long exptime,
  * "noreply" option is an optional option that always comes right before "\r\n"
  * sequence.
  *
- * @param p pointer to the symbol right after the last parsed token. The next
- *          symbol should be either '\r' or a beginning of a "nereply" token.
- *          The p will be updated to point to the next symbol after either
- *          "noreply" token (if present) or after "\r\n" sequence.
+ * @param p pointer to the first (non-space) symbol in the current token. It
+ *          should be either '\r' or a beginning of a "nereply" token. The p
+ *          will be updated to point to the next symbol after either "noreply"
+ *          token (if present) or after "\r\n" sequence.
  * @param noreply true if there was a "noreply" token parsed and false
  *                otherwise. The value is undefined if the packet is malformed.
  *
@@ -167,15 +166,25 @@ inline bool memcached::convert2epoch(unsigned long exptime,
  */
 inline bool memcached::parse_noreply(char*& p, bool& noreply) const
 {
-    if (*p != '\r') {
-        if (strncmp(p + 1, "noreply", 7)) {
+    if (p[0] != '\r') {
+        if (memcmp(p, "noreply", 7)) {
             cerr<<"Bad packet format: failed to parse \"noreply\" option"<<endl;
             return false;
         }
 
+        if ((p[7] != '\r') || (p[8] != '\n')) {
+            cerr<<"Bad packet format: bad end of line format"<<endl;
+            return false;
+        }
+
         noreply = true;
-        p += 10;
+        p += 9;
     } else {
+        if (p[1] != '\n') {
+            cerr<<"Bad packet format: bad end of line format"<<endl;
+            return false;
+        }
+
         noreply = false;
         p += 2;
     }
@@ -239,6 +248,10 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
     }
 
     p = end;
+
+    len -= (p - packet);
+
+    eat_spaces(p, len);
 
     // Handle "noreply"
     if (!parse_noreply(p, noreply)) {
@@ -387,6 +400,93 @@ int memcached::process_request(char* packet, u16 len, bool& noreply)
     return handle_command(cmd_it->second, packet, len, noreply);
 }
 
+/**
+ * Moves the cursor to the first non-space character. Updates the cursor and the
+ * number of the left characters (till the packet end) appropriately.
+ *
+ * @param c cursor position
+ * @param l number of characters left.
+ */
+inline void memcached::eat_spaces(char*& c, u16& l) const
+{
+    while ((*c == ' ') && l) {
+        c++;
+        l--;
+    }
+}
+
+/**
+ * Handle flush_all command.
+ *
+ * flush_all[ <num>][ noreply]\r\n
+ *
+ * We won't support the optional numeric parameter just yet. It's useless for
+ * osv-memcached.
+ *
+ * @param p
+ * @param l
+ * @param noreply
+ *
+ * @return
+ */
+int memcached::do_flush_all(char* p, u16 l, bool& noreply)
+{
+    char* cursor = p + 9;
+    u16 len = l - 9;
+
+    if (len < 2) {
+        goto bad_format_err;
+    }
+
+    // The shortest format: flush_all\r\n
+    if ((l == 2) && (cursor[0] == '\r') && (cursor[1] == '\n')) {
+        WITH_LOCK(_locked_shrinker) {
+            delete_all_cache_entries();
+        }
+        return send_cmd_ok(p);
+    }
+
+    if (cursor[0] != ' ') {
+        goto bad_format_err;
+    }
+
+    eat_spaces(cursor, len);
+    if (!len) {
+        goto bad_format_err;
+    }
+
+    // If it's a numeric field...
+    if (cursor[0] != 'n') {
+        // TODO: We don't support the flush delay parameter yet.
+        cerr<<"We don't support a delay parameter of flush_all command"<<endl;
+        goto bad_format_err;
+    }
+
+    // Handle "noreply"
+    if (!parse_noreply(cursor, noreply)) {
+        goto bad_format_err;
+    }
+
+    if (cursor - p > l) {
+        cerr<<"flush_all: out of packet bounds"<<endl;
+        goto bad_format_err;
+    }
+
+    WITH_LOCK(_locked_shrinker) {
+        delete_all_cache_entries();
+    }
+
+    if (!noreply) {
+        return send_cmd_ok(p);
+    } else {
+        return 0;
+    }
+
+bad_format_err:
+    cerr<<"Bad command format"<<endl;
+    return send_cmd_error(p);
+}
+
 inline int memcached::handle_command(commands cmd, char* p, u16 l,
                                      bool& noreply)
 {
@@ -395,6 +495,8 @@ inline int memcached::handle_command(commands cmd, char* p, u16 l,
         return do_get(p, l);
     case SET:
         return do_set(p, l, noreply);
+    case FLUSH:
+        return do_flush_all(p, l, noreply);
     default:
         cerr<<"Command "<<cmd<<" is not implemented yet"<<endl;
         return send_cmd_error(p);
@@ -562,6 +664,7 @@ size_t memcached::shrink_cache_locked(size_t n)
             ++c;
             delete_cache_entry(c_it);
         } else {
+            // Remove from the list and push into the heap
             exp_set_iterator s_it = _exp_set.insert(*c);
             exp_list_iterator old_c = c++;
             _exp_list.erase(old_c);
@@ -602,8 +705,6 @@ size_t memcached::shrink_cache_locked(size_t n)
         delete_cache_entry(c_it);
     }
 
-    _cached_data_size -= released_amount;
-
     //printf("Released %ld bytes\n", released_amount);
 
     return released_amount;
@@ -643,9 +744,22 @@ void inline memcached::delete_cache_entry(cache_iterator& it)
         _exp_list.erase(it->second.exp_list_link);
     }
 
+    _cached_data_size -= it->second.lru_link->mem_size;
+
     _cache_lru.erase_and_dispose(it->second.lru_link, delete_disposer());
     it->second.initialized = false;
     _cache.erase(it);
+}
+
+void inline memcached::delete_all_cache_entries()
+{
+    printf("Flushing the cache\n");
+
+   _exp_set.clear();
+   _exp_list.clear();
+   _cache_lru.clear_and_dispose(delete_disposer()) ;
+   _cache.clear();
+   _cached_data_size = 0;
 }
 
 } // namespace osv_apps

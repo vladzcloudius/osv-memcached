@@ -233,10 +233,25 @@ private:
         return _hdr_len + sizeof(msg) - 1;
     }
 
+    int send_cmd_ok(char* packet) {
+        constexpr static char msg[] = "OK\r\n";
+
+        memcpy(packet, msg, sizeof(msg) - 1);
+
+        return _hdr_len + sizeof(msg) - 1;
+    }
+
+    /**
+     * Currently memcache protocol doesn't support multi-frame requests - only
+     * responces.
+     * @param hdr
+     *
+     * @return
+     */
     bool memcached_header_invalid(memcached_header* hdr)
     {
         return (hdr->sequence_number_n != 0) ||
-               (hdr->number_of_datagrams_n != _htons_1);
+               (ntohs(hdr->number_of_datagrams_n) > 1);
         // Could have also checked reserved !=0, but memaslap actually sets
         // it to 1...
     }
@@ -303,18 +318,21 @@ private:
     // Command handlers
     int do_get(char* packet, u16 len);
     int do_set(char* packet, u16 len, bool& noreply);
+    int do_flush_all(char* p, u16 l, bool& noreply);
+
     int handle_command(commands cmd, char* packet, u16 len, bool& noreply);
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
                            memcache_value& cache_elem, bool& noreply);
     bool parse_key(char* p, u16 l, std::string& key);
     bool parse_noreply(char*& p, bool& noreply) const;
+    void eat_spaces(char*& p, u16& l) const;
 
     bool convert2epoch(unsigned long exptime, unsigned long& t) const;
     unsigned long get_secs_since_epoch() const;
     void delete_cache_entry(cache_iterator& it);
+    void delete_all_cache_entries();
 
 private:
-    const u16 _htons_1;
     const size_t _hdr_len = sizeof(memcached_header);
     size_t _cached_data_size;
     locked_shrinker _locked_shrinker;
