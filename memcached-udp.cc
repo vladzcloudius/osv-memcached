@@ -644,6 +644,7 @@ void inline memcached::delete_cache_entry(cache_iterator& it)
     }
 
     _cache_lru.erase_and_dispose(it->second.lru_link, delete_disposer());
+    it->second.initialized = false;
     _cache.erase(it);
 }
 
