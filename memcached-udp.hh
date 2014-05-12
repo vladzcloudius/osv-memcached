@@ -57,7 +57,7 @@ public:
         oc::uptime::time_point   last_touch_time;
         size_t                   mem_size;
 
-        time_tracking_entry(std::string& k) :
+        time_tracking_entry(const std::string& k) :
             key(k), last_touch_time(oc::uptime::now()), mem_size(0) {}
 
         // hook for a heap by "expired" field
@@ -347,6 +347,9 @@ private:
     bool convert2epoch(unsigned long exptime, unsigned long& t) const;
     unsigned long get_secs_since_epoch() const;
     void delete_cache_entry(cache_iterator& it);
+    void set_new_cache_entry(memcache_value& cache_entry,
+                             const std::string& str_key,
+                             const size_t& memory_needed);
     void delete_all_cache_entries();
 
 private:

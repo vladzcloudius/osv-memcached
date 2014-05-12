@@ -319,26 +319,7 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
                                             str_key.size());
 
         if (!cache_entry.initialized) {
-            // Create a new LRU entry
-            time_tracking_entry* entry = new time_tracking_entry(str_key);
-            entry->mem_size = memory_needed;
-
-            // Update the LRU list
-            _cache_lru.push_front(*entry);
-            cache_entry.lru_link = _cache_lru.begin();
-
-            // Update the "expired" list and set links, set the expiration time
-            cache_entry.exp_set_link  = _exp_set.end();
-            entry->exptime = cache_entry.exptime;
-
-            if (!cache_entry.exptime) {
-                cache_entry.exp_list_link = _exp_list.end();
-            } else {
-                _exp_list.push_front(*entry);
-                cache_entry.exp_list_link = _exp_list.begin();
-            }
-
-            cache_entry.initialized = true;
+            set_new_cache_entry(cache_entry, str_key, memory_needed);
 
             #if 0
             if (bucket_count !=  _cache.bucket_count()) {
@@ -806,6 +787,32 @@ void inline memcached::delete_cache_entry(cache_iterator& it)
     _cache_lru.erase_and_dispose(it->second.lru_link, delete_disposer());
     it->second.initialized = false;
     _cache.erase(it);
+}
+
+inline void memcached::set_new_cache_entry(memcache_value& cache_entry,
+                                           const string& str_key,
+                                           const size_t& memory_needed)
+{
+    // Create a new LRU entry
+    time_tracking_entry* entry = new time_tracking_entry(str_key);
+    entry->mem_size = memory_needed;
+
+    // Update the LRU list
+    _cache_lru.push_front(*entry);
+    cache_entry.lru_link = _cache_lru.begin();
+
+    // Update the "expired" list and set links, set the expiration time
+    cache_entry.exp_set_link  = _exp_set.end();
+    entry->exptime = cache_entry.exptime;
+
+    if (!cache_entry.exptime) {
+        cache_entry.exp_list_link = _exp_list.end();
+    } else {
+        _exp_list.push_front(*entry);
+        cache_entry.exp_list_link = _exp_list.begin();
+    }
+
+    cache_entry.initialized = true;
 }
 
 void inline memcached::delete_all_cache_entries()
