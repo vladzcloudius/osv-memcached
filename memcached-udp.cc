@@ -214,12 +214,13 @@ inline bool memcached::parse_noreply(char*& p, u16& l, bool& noreply) const
  * @param cmd
  * @param packet
  * @param len
- * @param cache_elem
+ * @param cache_elem pointer to the cache element to update with the parsed data
+ *                   if NULL only parsing is performed
  *
  * @return
  */
 bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
-                                  memcache_value& cache_elem, bool& noreply)
+                                  memcache_value* cache_elem, bool& noreply)
 {
     unsigned long flags, exptime, bytes;
     char *p = packet, *end;
@@ -274,16 +275,19 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
     }
 
     // Update the cache entry
-    cache_elem.exptime = aligned_exptime;
-    cache_elem.flags = flags;
+    if (cache_elem) {
+        cache_elem->exptime = aligned_exptime;
+        cache_elem->flags = flags;
 
-    switch (cmd) {
-    case SET:
-        cache_elem.data.assign(p, bytes);
-        break;
-    default:
-        // Not supported command
-        assert(0);
+
+        switch (cmd) {
+        case SET:
+            cache_elem->data.assign(p, bytes);
+            break;
+        default:
+            // Not supported command
+            assert(0);
+        }
     }
 
     return true;
@@ -306,7 +310,7 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
     WITH_LOCK(_locked_shrinker) {
         memcache_value& cache_entry = _cache[str_key];
 
-        if (!parse_storage_cmd(SET, p, cur_len, cache_entry, noreply)) {
+        if (!parse_storage_cmd(SET, p, cur_len, &cache_entry, noreply)) {
             noreply = false;
             return send_cmd_error(packet);
         }

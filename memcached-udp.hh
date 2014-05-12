@@ -339,7 +339,7 @@ private:
 
     int handle_command(commands cmd, char* packet, u16 len, bool& noreply);
     bool parse_storage_cmd(commands cmd, char* packet, u16 len,
-                           memcache_value& cache_elem, bool& noreply);
+                           memcache_value* cache_elem, bool& noreply);
     bool parse_key(char*& p, u16& l, std::string& key);
     bool parse_noreply(char*& p, u16& l, bool& noreply) const;
     void eat_spaces(char*& p, u16& l) const;
