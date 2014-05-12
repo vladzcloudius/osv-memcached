@@ -282,6 +282,7 @@ bool memcached::parse_storage_cmd(commands cmd, char* packet, u16 len,
 
         switch (cmd) {
         case SET:
+        case ADD:
             cache_elem->data.assign(p, bytes);
             break;
         default:
@@ -347,6 +348,79 @@ inline int memcached::do_set(char* packet, u16 len, bool& noreply)
     }
 }
 
+/**
+ * Handle "add" command - add a new cache entry *IF* it doesn't already exist
+ *
+ * @param packet
+ * @param len
+ * @param noreply
+ *
+ * @return
+ */
+inline int memcached::do_add(char* packet, u16 len, bool& noreply)
+{
+    //cerr<<"got 'set'\n";
+    char* p = packet + 3;
+    u16 cur_len = len - 3;
+
+    // Parse a "key"
+    string str_key;
+    if (!parse_key(p, cur_len, str_key)) {
+        return send_cmd_error(packet);
+    }
+
+    size_t memory_needed;
+
+    WITH_LOCK(_locked_shrinker) {
+        cache_iterator it = _cache.find(str_key);
+
+        if (it == _cache.end()) {
+            memcache_value& cache_entry = _cache[str_key];
+
+
+            if (!parse_storage_cmd(ADD, p, cur_len, &cache_entry, noreply)) {
+                noreply = false;
+                return send_cmd_error(packet);
+            }
+
+            memory_needed = entry_mem_footprint(cache_entry.data.size(),
+                                                str_key.size());
+
+            set_new_cache_entry(cache_entry, str_key, memory_needed);
+
+            #if 0
+            if (bucket_count !=  _cache.bucket_count()) {
+                bucket_count =  _cache.bucket_count();
+                printf("bucket number is %d\n", bucket_count);
+            }
+            #endif
+
+            _cached_data_size += memory_needed;
+
+            //cerr<<"got set with " << bytes << " bytes\n";
+            if (!noreply) {
+                return send_cmd_stored(packet);
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    //
+    // If the entry already exists - just parse the packet to see if there is a
+    // "noreply" option and if there isn't - report an appropriate error status.
+    //
+    if (!parse_storage_cmd(ADD, p, cur_len, NULL, noreply)) {
+        noreply = false;
+        return send_cmd_error(packet);
+    }
+
+    if (!noreply) {
+        return send_cmd_not_stored(packet);
+    }
+
+    return 0;
+}
 
 //static u64 bucket_count;
 /**
@@ -531,6 +605,8 @@ inline int memcached::handle_command(commands cmd, char* p, u16 l,
         return do_get(p, l);
     case SET:
         return do_set(p, l, noreply);
+    case ADD:
+        return do_add(p, l, noreply);
     case FLUSH:
         return do_flush_all(p, l, noreply);
     case DELETE:
